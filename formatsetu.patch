@@ -1,15 +1,258 @@
 diff --git a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt b/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
-index 917e483..e323235 100644
+index 917e483..304f9b3 100644
 --- a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
 +++ b/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
-@@ -1885,3 +1885,5 @@ class ConversionService : Service() {
+@@ -73,2 +73,8 @@ import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
+ import com.tom_roush.pdfbox.pdmodel.PDDocument
++import com.tom_roush.pdfbox.pdmodel.PDPage
++import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
++import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
++import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
++import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
++import com.tom_roush.pdfbox.util.Matrix
+ import com.tom_roush.pdfbox.pdmodel.PDResources
+@@ -1440,2 +1446,26 @@ class ConversionService : Service() {
+ 
++        when (TargetId.fromKey(input.targetFormat)) {
++            TargetId.PdfRotate -> {
++                writeRotatedPdf(input, outputFile)
++                return
++            }
++            TargetId.PdfOrganize -> {
++                writeOrganizedPdf(input, outputFile)
++                return
++            }
++            TargetId.PdfPageNumbers -> {
++                writePdfWithPageNumbers(input, outputFile)
++                return
++            }
++            TargetId.PdfWatermark -> {
++                writeWatermarkedPdf(input, outputFile)
++                return
++            }
++            TargetId.PdfCrop -> {
++                writeCroppedPdf(input, outputFile)
++                return
++            }
++            else -> Unit
++        }
++
+         when (input.pdfSecurityOptions.mode) {
+@@ -1657,2 +1687,206 @@ class ConversionService : Service() {
+ 
++    // --- Offline PDF tools: rotate, organise, page numbers, watermark, crop ---
++
++    /**
++     * Opens a single cached PDF, lets [process] mutate the document, then saves it.
++     * Every PDF tool shares this so load/save, cancellation and cleanup stay identical.
++     */
++    private fun forEachPdfPage(
++        input: ConversionTaskInput,
++        outputFile: File,
++        process: (PDDocument) -> Unit
++    ) {
++        val inputUris = input.inputUris.ifEmpty { listOf(input.inputUri) }
++        if (inputUris.size != 1) throw LocalizedFailure(localizedText(R.string.text_task_message_pdf_conversion_failed))
++
++        throwIfConversionCancelled()
++        ensurePdfBoxReady()
++        val cachedInputs = cachePdfInputsForPdfBox(input, inputUris)
++        val document = loadPdfBoxDocument(cachedInputs.files.first(), input.pdfPasswordAt(0))
++        try {
++            if (document.numberOfPages <= 0) {
++                throw LocalizedFailure(localizedText(R.string.text_task_message_pdf_has_no_pages))
++            }
++            throwIfConversionCancelled()
++            process(document)
++            throwIfConversionCancelled()
++            document.save(outputFile)
++            throwIfConversionCancelled()
++            updateImageProgress(0.95f)
++        } catch (throwable: Throwable) {
++            outputFile.delete()
++            throw throwable
++        } finally {
++            runCatching { document.close() }
++            cachedInputs.delete()
++        }
++    }
++
++    private fun writeRotatedPdf(input: ConversionTaskInput, outputFile: File) {
++        val degrees = input.pdfOptions.tool.rotateDegrees.coerceIn(0, 359)
++        forEachPdfPage(input, outputFile) { document ->
++            val pageCount = document.numberOfPages
++            for (pageIndex in 0 until pageCount) {
++                val page = document.getPage(pageIndex)
++                page.rotation = ((page.rotation + degrees) % 360 + 360) % 360
++                updateImageProgress(progressForIndexedWork(pageIndex, pageCount, 0.05f, 0.85f))
++            }
++        }
++    }
++
++    private fun writeOrganizedPdf(input: ConversionTaskInput, outputFile: File) {
++        val order = parsePdfPageOrder(input.pdfOptions.tool.pageOrder)
++        if (order.isEmpty()) throw LocalizedFailure(localizedText(R.string.text_task_message_pdf_conversion_failed))
++
++        val inputUris = input.inputUris.ifEmpty { listOf(input.inputUri) }
++        if (inputUris.size != 1) throw LocalizedFailure(localizedText(R.string.text_task_message_pdf_conversion_failed))
++
++        throwIfConversionCancelled()
++        ensurePdfBoxReady()
++        val cachedInputs = cachePdfInputsForPdfBox(input, inputUris)
++        val source = loadPdfBoxDocument(cachedInputs.files.first(), input.pdfPasswordAt(0))
++        val destination = PDDocument(MemoryUsageSetting.setupTempFileOnly())
++        try {
++            if (source.numberOfPages <= 0) {
++                throw LocalizedFailure(localizedText(R.string.text_task_message_pdf_has_no_pages))
++            }
++            order.forEachIndexed { index, pageNumber ->
++                throwIfConversionCancelled()
++                val pageIndex = pageNumber - 1
++                if (pageIndex in 0 until source.numberOfPages) {
++                    destination.importPage(source.getPage(pageIndex))
++                }
++                updateImageProgress(progressForIndexedWork(index, order.size, 0.05f, 0.85f))
++            }
++            if (destination.numberOfPages <= 0) {
++                throw LocalizedFailure(localizedText(R.string.text_task_message_pdf_conversion_failed))
++            }
++            throwIfConversionCancelled()
++            destination.save(outputFile)
++            throwIfConversionCancelled()
++            updateImageProgress(0.95f)
++        } catch (throwable: Throwable) {
++            outputFile.delete()
++            throw throwable
++        } finally {
++            runCatching { destination.close() }
++            runCatching { source.close() }
++            cachedInputs.delete()
++        }
++    }
++
++    /** Parses a 1-based page order such as "1,3,5-7" into page numbers. */
++    private fun parsePdfPageOrder(raw: String): List<Int> {
++        val trimmed = raw.trim().take(PdfToolOptions.MAX_PAGE_ORDER_LENGTH)
++        if (trimmed.isEmpty()) return emptyList()
++        val pages = mutableListOf<Int>()
++        trimmed.split(',').forEach { token ->
++            val part = token.trim()
++            if (part.isEmpty()) return@forEach
++            if (part.contains('-')) {
++                val bounds = part.split('-', limit = 2)
++                val start = bounds.getOrNull(0)?.trim()?.toIntOrNull()
++                val end = bounds.getOrNull(1)?.trim()?.toIntOrNull()
++                if (start != null && end != null) {
++                    if (start <= end) {
++                        for (page in start..end) pages.add(page)
++                    } else {
++                        for (page in start downTo end) pages.add(page)
++                    }
++                }
++            } else {
++                part.toIntOrNull()?.let { pages.add(it) }
++            }
++        }
++        return pages.filter { it > 0 }.take(PdfToolOptions.MAX_PAGE_ORDER_LENGTH)
++    }
++
++    private fun writePdfWithPageNumbers(input: ConversionTaskInput, outputFile: File) {
++        val tool = input.pdfOptions.tool
++        val startNumber = tool.pageNumberStart.coerceAtLeast(1)
++        forEachPdfPage(input, outputFile) { document ->
++            val font = PDType1Font.HELVETICA
++            val fontSize = 11f
++            val margin = 24f
++            val pageCount = document.numberOfPages
++            for (pageIndex in 0 until pageCount) {
++                val page = document.getPage(pageIndex)
++                val label = (startNumber + pageIndex).toString()
++                val box = page.cropBox
++                val textWidth = font.getStringWidth(label) / 1000f * fontSize
++                val x = when (tool.pageNumberPosition) {
++                    PdfPageNumberPosition.BottomLeft, PdfPageNumberPosition.TopLeft -> box.lowerLeftX + margin
++                    PdfPageNumberPosition.BottomRight, PdfPageNumberPosition.TopRight ->
++                        box.upperRightX - margin - textWidth
++                    else -> box.lowerLeftX + (box.width - textWidth) / 2f
++                }
++                val y = when (tool.pageNumberPosition) {
++                    PdfPageNumberPosition.TopLeft,
++                    PdfPageNumberPosition.TopCentre,
++                    PdfPageNumberPosition.TopRight -> box.upperRightY - margin
++                    else -> box.lowerLeftY + margin
++                }
++                PDPageContentStream(document, page, PDPageContentStream.AppendMode.APPEND, true, true).use { stream ->
++                    stream.beginText()
++                    stream.setFont(font, fontSize)
++                    stream.setNonStrokingColor(70, 70, 70)
++                    stream.setTextMatrix(Matrix.getTranslateInstance(x, y))
++                    stream.showText(label)
++                    stream.endText()
++                }
++                updateImageProgress(progressForIndexedWork(pageIndex, pageCount, 0.05f, 0.85f))
++            }
++        }
++    }
++
++    private fun writeWatermarkedPdf(input: ConversionTaskInput, outputFile: File) {
++        val tool = input.pdfOptions.tool
++        val text = tool.watermarkText?.trim().orEmpty()
++        if (text.isEmpty()) throw LocalizedFailure(localizedText(R.string.text_task_message_pdf_conversion_failed))
++        forEachPdfPage(input, outputFile) { document ->
++            val font = PDType1Font.HELVETICA_BOLD
++            val alpha = tool.watermarkOpacity.coerceIn(5, 100) / 100f
++            val angle = Math.toRadians(tool.watermarkRotation.coerceIn(0, 90).toDouble())
++            val pageCount = document.numberOfPages
++            for (pageIndex in 0 until pageCount) {
++                val page = document.getPage(pageIndex)
++                val box = page.cropBox
++                val fontSize = (minOf(box.width, box.height) * 0.12f).coerceIn(12f, 96f)
++                val textWidth = font.getStringWidth(text) / 1000f * fontSize
++                val state = PDExtendedGraphicsState().apply {
++                    nonStrokingAlphaConstant = alpha
++                }
++                PDPageContentStream(document, page, PDPageContentStream.AppendMode.APPEND, true, true).use { stream ->
++                    stream.setGraphicsStateParameters(state)
++                    stream.beginText()
++                    stream.setFont(font, fontSize)
++                    stream.setNonStrokingColor(120, 120, 120)
++                    val x = box.lowerLeftX + (box.width - (textWidth * Math.cos(angle).toFloat())) / 2f
++                    val y = box.lowerLeftY + (box.height - (textWidth * Math.sin(angle).toFloat())) / 2f
++                    stream.setTextMatrix(Matrix.getRotateInstance(angle, x, y))
++                    stream.showText(text)
++                    stream.endText()
++                }
++                updateImageProgress(progressForIndexedWork(pageIndex, pageCount, 0.05f, 0.85f))
++            }
++        }
++    }
++
++    private fun writeCroppedPdf(input: ConversionTaskInput, outputFile: File) {
++        val marginPercent = input.pdfOptions.tool.cropMarginPercent.coerceIn(0, 40)
++        forEachPdfPage(input, outputFile) { document ->
++            val pageCount = document.numberOfPages
++            for (pageIndex in 0 until pageCount) {
++                val page = document.getPage(pageIndex)
++                val box = page.cropBox
++                val insetX = box.width * marginPercent / 100f
++                val insetY = box.height * marginPercent / 100f
++                val newWidth = (box.width - insetX * 2f).coerceAtLeast(1f)
++                val newHeight = (box.height - insetY * 2f).coerceAtLeast(1f)
++                page.cropBox = PDRectangle(box.lowerLeftX + insetX, box.lowerLeftY + insetY, newWidth, newHeight)
++                updateImageProgress(progressForIndexedWork(pageIndex, pageCount, 0.05f, 0.85f))
++            }
++        }
++    }
++
+     private fun writePdfTextFile(
+@@ -1885,3 +2119,5 @@ class ConversionService : Service() {
                          input.imageOptions.quality,
 -                        shouldUseWebpLossless(outputProfile, input.imageOptions)
 +                        shouldUseWebpLossless(outputProfile, input.imageOptions),
 +                        targetSizeBytes = input.imageOptions.targetSizeBytes,
 +                        edit = input.imageOptions.edit
                      )
-@@ -2226,8 +2228,11 @@ class ConversionService : Service() {
+@@ -2226,8 +2462,11 @@ class ConversionService : Service() {
              throwIfConversionCancelled()
 -            outputFile.outputStream().use { output ->
 -                if (!bitmapForOutput.compress(compressFormat, quality, output)) {
@@ -27,21 +270,21 @@ index 917e483..e323235 100644
 +                edit = input.imageOptions.edit
 +            )
              throwIfConversionCancelled()
-@@ -2323,3 +2328,5 @@ class ConversionService : Service() {
+@@ -2323,3 +2562,5 @@ class ConversionService : Service() {
              requestedQuality = imageOptions.quality,
 -            useWebpLossless = shouldUseWebpLossless(outputProfile, imageOptions)
 +            useWebpLossless = shouldUseWebpLossless(outputProfile, imageOptions),
 +            targetSizeBytes = imageOptions.targetSizeBytes,
 +            edit = imageOptions.edit
          )
-@@ -2332,3 +2339,5 @@ class ConversionService : Service() {
+@@ -2332,3 +2573,5 @@ class ConversionService : Service() {
          requestedQuality: Int,
 -        useWebpLossless: Boolean = false
 +        useWebpLossless: Boolean = false,
 +        targetSizeBytes: Long? = null,
 +        edit: ImageEditOptions? = null
      ) {
-@@ -2345,8 +2354,11 @@ class ConversionService : Service() {
+@@ -2345,8 +2588,11 @@ class ConversionService : Service() {
              throwIfConversionCancelled()
 -            outputFile.outputStream().use { output ->
 -                if (!bitmapForOutput.compress(compressFormat, quality, output)) {
@@ -59,7 +302,7 @@ index 917e483..e323235 100644
 +                edit = edit
 +            )
              throwIfConversionCancelled()
-@@ -2359,2 +2371,371 @@ class ConversionService : Service() {
+@@ -2359,2 +2605,371 @@ class ConversionService : Service() {
  
 +    /**
 +     * Writes [bitmap] to [outputFile], honouring an optional maximum output size.
@@ -431,17 +674,17 @@ index 917e483..e323235 100644
 +    }
 +
      private fun writeIcoImageFile(
-@@ -4209,3 +4590,3 @@ class ConversionService : Service() {
+@@ -4209,3 +4824,3 @@ class ConversionService : Service() {
                  }
 -                input.videoOptions.videoBitrate?.let { bitrate ->
 +                effectiveVideoBitrate(input.videoOptions, totalDurationMs, includeAudio, videoAudioOptions)?.let { bitrate ->
                      add("-b:v")
-@@ -4882,3 +5263,3 @@ class ConversionService : Service() {
+@@ -4882,3 +5497,3 @@ class ConversionService : Service() {
              }
 -            input.videoOptions.videoBitrate?.let { bitrate ->
 +            effectiveVideoBitrate(input.videoOptions, durationMs, includeAudio, videoAudioOptions)?.let { bitrate ->
                  add("-b:v")
-@@ -4933,2 +5314,22 @@ class ConversionService : Service() {
+@@ -4933,2 +5548,22 @@ class ConversionService : Service() {
  
 +    private fun effectiveVideoBitrate(
 +        videoOptions: VideoExportOptions,
@@ -464,15 +707,25 @@ index 917e483..e323235 100644
 +    }
 +
      private fun ffmpegVideoAudioOptionsFor(
-@@ -4963,3 +5364,5 @@ class ConversionService : Service() {
+@@ -4963,3 +5598,5 @@ class ConversionService : Service() {
              } else {
 -                audioOptions.audioBitrate?.let { bitrate ->
 +                val targetAudioBitrate = targetBitrateForSize(audioOptions.targetSizeBytes, durationMs)
 +                    ?.coerceAtLeast(MIN_TARGET_AUDIO_BITRATE_BPS)
 +                (targetAudioBitrate ?: audioOptions.audioBitrate)?.let { bitrate ->
                      add("-b:a")
+@@ -7176,3 +7813,8 @@ class ConversionService : Service() {
+                         TargetId.fromKey(input.targetFormat) == TargetId.PdfDecrypt ||
+-                        TargetId.fromKey(input.targetFormat) == TargetId.PdfCompress ->
++                        TargetId.fromKey(input.targetFormat) == TargetId.PdfCompress ||
++                        TargetId.fromKey(input.targetFormat) == TargetId.PdfRotate ||
++                        TargetId.fromKey(input.targetFormat) == TargetId.PdfOrganize ||
++                        TargetId.fromKey(input.targetFormat) == TargetId.PdfPageNumbers ||
++                        TargetId.fromKey(input.targetFormat) == TargetId.PdfWatermark ||
++                        TargetId.fromKey(input.targetFormat) == TargetId.PdfCrop ->
+                         OutputProfile(extension = "pdf", mimeType = MIME_TYPE_PDF, kind = OutputMediaKind.Document)
 diff --git a/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt b/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
-index bd42038..12598cc 100644
+index bd42038..8491722 100644
 --- a/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
 +++ b/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
 @@ -130,3 +130,4 @@ data class VideoExportOptions(
@@ -596,13 +849,60 @@ index bd42038..12598cc 100644
 +}
 +
  data class ImageExportOptions(
-@@ -284,3 +389,5 @@ data class ImageExportOptions(
+@@ -284,5 +389,34 @@ data class ImageExportOptions(
      val webpLossless: Boolean = false,
 -    val superResolution: ImageSuperResolutionMode = ImageSuperResolutionMode.Off
 +    val superResolution: ImageSuperResolutionMode = ImageSuperResolutionMode.Off,
 +    val targetSizeBytes: Long? = null,
 +    val edit: ImageEditOptions = ImageEditOptions()
  )
+ 
++enum class PdfPageNumberPosition {
++    BottomCentre,
++    BottomLeft,
++    BottomRight,
++    TopCentre,
++    TopLeft,
++    TopRight
++}
++
++/**
++ * Options for the offline PDF tools: rotate, organise, page numbers, watermark, crop.
++ */
++data class PdfToolOptions(
++    val rotateDegrees: Int = 90,
++    val pageOrder: String = "",
++    val pageNumberPosition: PdfPageNumberPosition = PdfPageNumberPosition.BottomCentre,
++    val pageNumberStart: Int = 1,
++    val watermarkText: String? = null,
++    val watermarkOpacity: Int = 30,
++    val watermarkRotation: Int = 45,
++    val cropMarginPercent: Int = 5
++) {
++    companion object {
++        const val MAX_PAGE_ORDER_LENGTH = 2000
++    }
++}
++
+ data class PdfExportOptions(
+@@ -290,3 +424,4 @@ data class PdfExportOptions(
+     val renderQuality: PdfRenderQuality = PdfRenderQuality.Balanced,
+-    val compressionPreset: PdfCompressionPreset = PdfCompressionPreset.Balanced
++    val compressionPreset: PdfCompressionPreset = PdfCompressionPreset.Balanced,
++    val tool: PdfToolOptions = PdfToolOptions()
+ )
+diff --git a/app/src/main/java/org/zenconverter/app/conversion/TargetId.kt b/app/src/main/java/org/zenconverter/app/conversion/TargetId.kt
+index 025ef5a..12a703f 100644
+--- a/app/src/main/java/org/zenconverter/app/conversion/TargetId.kt
++++ b/app/src/main/java/org/zenconverter/app/conversion/TargetId.kt
+@@ -27,2 +27,7 @@ enum class TargetId(val key: String) {
+     PdfDecrypt("pdf_decrypt"),
++    PdfRotate("pdf_rotate"),
++    PdfOrganize("pdf_organize"),
++    PdfPageNumbers("pdf_page_numbers"),
++    PdfWatermark("pdf_watermark"),
++    PdfCrop("pdf_crop"),
+     Woff2("WOFF2"),
 diff --git a/app/src/main/java/org/zenconverter/app/ui/UiText.kt b/app/src/main/java/org/zenconverter/app/ui/UiText.kt
 index 23f94f9..a8d50db 100644
 --- a/app/src/main/java/org/zenconverter/app/ui/UiText.kt
@@ -618,7 +918,7 @@ index 23f94f9..a8d50db 100644
 +
      val pageSize: String
 diff --git a/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt b/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
-index 49da19f..7bc0ea7 100644
+index 49da19f..7533ec9 100644
 --- a/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
 +++ b/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
 @@ -126,2 +126,5 @@ import androidx.compose.material3.RangeSliderState
@@ -647,7 +947,23 @@ index 49da19f..7bc0ea7 100644
 +import org.zenconverter.app.conversion.ImageRotateMode
 +import org.zenconverter.app.conversion.ImageSizeUnit
  import org.zenconverter.app.conversion.ImageSuperResolutionMode
-@@ -508,12 +521,12 @@ internal enum class AccentColorOption(
+@@ -199,3 +212,5 @@ import org.zenconverter.app.conversion.PdfImagePageMode
+ import org.zenconverter.app.conversion.PdfRenderQuality
++import org.zenconverter.app.conversion.PdfPageNumberPosition
+ import org.zenconverter.app.conversion.PdfSecurityOptions
++import org.zenconverter.app.conversion.PdfToolOptions
+ import org.zenconverter.app.conversion.VideoAdvancedOptions
+@@ -307,3 +322,8 @@ enum class FileCategory(
+             TargetFormat(TargetId.PdfEncrypt, "pdf", "Password protect"),
+-            TargetFormat(TargetId.PdfDecrypt, "pdf", "Remove password")
++            TargetFormat(TargetId.PdfDecrypt, "pdf", "Remove password"),
++            TargetFormat(TargetId.PdfRotate, "pdf", "Rotate pages"),
++            TargetFormat(TargetId.PdfOrganize, "pdf", "Reorder or drop pages"),
++            TargetFormat(TargetId.PdfPageNumbers, "pdf", "Add page numbers"),
++            TargetFormat(TargetId.PdfWatermark, "pdf", "Stamp a watermark"),
++            TargetFormat(TargetId.PdfCrop, "pdf", "Trim margins")
+         )
+@@ -508,12 +528,12 @@ internal enum class AccentColorOption(
      Dynamic("Material You", Color(0xFF6750A4), Color.White, Color(0xFFD0BCFF), Color(0xFF381E72)),
 -    Charcoal("Charcoal", Color(0xFF111111), Color.White, Color(0xFFE5E7EB), Color(0xFF111111)),
 -    DeepNavy("Deep Navy", Color(0xFF36454F), Color.White, Color(0xFF93C5FD), Color(0xFF0F172A)),
@@ -670,7 +986,7 @@ index 49da19f..7bc0ea7 100644
 +    FernGreen("Fern Green", Color(0xFF4E8C6A), Color(0xFFFAF9F5), Color(0xFF8FD3B0), Color(0xFF0A2117)),
 +    DeepPurple("Deep Purple", Color(0xFF7C5CE0), Color(0xFFFFFDF8), Color(0xFFB9A6F2), Color(0xFF1C1233));
  
-@@ -965,3 +978,7 @@ fun ZenConverterApp(
+@@ -965,3 +985,7 @@ fun ZenConverterApp(
      ) {
 -        MaterialTheme(colorScheme = zenConverterColorScheme(context, accent, isDark, isOled)) {
 +        MaterialTheme(
@@ -679,17 +995,17 @@ index 49da19f..7bc0ea7 100644
 +            shapes = zenConverterShapes()
 +        ) {
              Surface(
-@@ -1867,3 +1884,3 @@ private fun Header(
+@@ -1867,3 +1891,3 @@ private fun Header(
                      .size(40.dp)
 -                    .clip(RoundedCornerShape(8.dp))
 +                    .clip(RoundedCornerShape(12.dp))
              )
-@@ -1877,3 +1894,3 @@ private fun Header(
+@@ -1877,3 +1901,3 @@ private fun Header(
                      style = MaterialTheme.typography.titleLarge,
 -                    fontWeight = FontWeight.SemiBold,
 +                    fontWeight = FontWeight.Medium,
                      color = MaterialTheme.colorScheme.onBackground,
-@@ -5820,2 +5837,346 @@ private fun AdvancedOptionsPanel(
+@@ -5820,2 +5844,346 @@ private fun AdvancedOptionsPanel(
  
 +private const val IMAGE_ADJUST_OFF = "Off"
 +private const val IMAGE_RESIZE_EXACT = "Exact size"
@@ -1036,7 +1352,7 @@ index 49da19f..7bc0ea7 100644
 +}
 +
  @Composable
-@@ -5833,3 +6194,7 @@ private fun ImageOptions(
+@@ -5833,3 +6201,7 @@ private fun ImageOptions(
      onPdfPageModeChange: (String) -> Unit,
 -    onSuperResolutionChange: (String) -> Unit
 +    onSuperResolutionChange: (String) -> Unit,
@@ -1045,7 +1361,7 @@ index 49da19f..7bc0ea7 100644
 +    editOptions: ImageEditOptions = ImageEditOptions(),
 +    onEditOptionsChange: (ImageEditOptions) -> Unit = {}
  ) {
-@@ -5921,3 +6286,28 @@ private fun ImageOptions(
+@@ -5921,2 +6293,220 @@ private fun ImageOptions(
              )
 +            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
 +                Text(
@@ -1063,7 +1379,7 @@ index 49da19f..7bc0ea7 100644
 +                    modifier = Modifier.fillMaxWidth()
 +                )
 +            }
-         }
++        }
 +
 +        ImageAdjustPanel(
 +            texts = texts,
@@ -1073,12 +1389,229 @@ index 49da19f..7bc0ea7 100644
 +            onOpenMenuChange = onOpenMenuChange,
 +            onEditChange = onEditOptionsChange
 +        )
-     }
-@@ -6107,2 +6497,3 @@ private fun QueueActions(
++    }
++}
++
++private const val PDF_ROTATE_90 = "90\u00b0"
++private const val PDF_ROTATE_180 = "180\u00b0"
++private const val PDF_ROTATE_270 = "270\u00b0"
++private val PDF_ROTATE_OPTIONS = listOf(PDF_ROTATE_90, PDF_ROTATE_180, PDF_ROTATE_270)
++private const val PDF_ANGLE_0 = "0\u00b0"
++private const val PDF_ANGLE_45 = "45\u00b0"
++private const val PDF_ANGLE_90 = "90\u00b0"
++private val PDF_WATERMARK_ANGLE_OPTIONS = listOf(PDF_ANGLE_0, PDF_ANGLE_45, PDF_ANGLE_90)
++private const val PDF_POSITION_BOTTOM_CENTRE = "Bottom centre"
++private const val PDF_POSITION_BOTTOM_LEFT = "Bottom left"
++private const val PDF_POSITION_BOTTOM_RIGHT = "Bottom right"
++private const val PDF_POSITION_TOP_CENTRE = "Top centre"
++private const val PDF_POSITION_TOP_LEFT = "Top left"
++private const val PDF_POSITION_TOP_RIGHT = "Top right"
++private val PDF_PAGE_NUMBER_POSITION_OPTIONS = listOf(
++    PDF_POSITION_BOTTOM_CENTRE,
++    PDF_POSITION_BOTTOM_LEFT,
++    PDF_POSITION_BOTTOM_RIGHT,
++    PDF_POSITION_TOP_CENTRE,
++    PDF_POSITION_TOP_LEFT,
++    PDF_POSITION_TOP_RIGHT
++)
++
++private fun pdfRotateLabelFor(degrees: Int): String = when (degrees) {
++    180 -> PDF_ROTATE_180
++    270 -> PDF_ROTATE_270
++    else -> PDF_ROTATE_90
++}
++
++private fun pdfRotateForLabel(label: String): Int = when (label) {
++    PDF_ROTATE_180 -> 180
++    PDF_ROTATE_270 -> 270
++    else -> 90
++}
++
++private fun pdfWatermarkAngleLabelFor(degrees: Int): String = when (degrees) {
++    0 -> PDF_ANGLE_0
++    90 -> PDF_ANGLE_90
++    else -> PDF_ANGLE_45
++}
++
++private fun pdfWatermarkAngleForLabel(label: String): Int = when (label) {
++    PDF_ANGLE_0 -> 0
++    PDF_ANGLE_90 -> 90
++    else -> 45
++}
++
++private fun pdfPageNumberPositionLabelFor(position: PdfPageNumberPosition): String = when (position) {
++    PdfPageNumberPosition.BottomCentre -> PDF_POSITION_BOTTOM_CENTRE
++    PdfPageNumberPosition.BottomLeft -> PDF_POSITION_BOTTOM_LEFT
++    PdfPageNumberPosition.BottomRight -> PDF_POSITION_BOTTOM_RIGHT
++    PdfPageNumberPosition.TopCentre -> PDF_POSITION_TOP_CENTRE
++    PdfPageNumberPosition.TopLeft -> PDF_POSITION_TOP_LEFT
++    PdfPageNumberPosition.TopRight -> PDF_POSITION_TOP_RIGHT
++}
++
++private fun pdfPageNumberPositionForLabel(label: String): PdfPageNumberPosition = when (label) {
++    PDF_POSITION_BOTTOM_LEFT -> PdfPageNumberPosition.BottomLeft
++    PDF_POSITION_BOTTOM_RIGHT -> PdfPageNumberPosition.BottomRight
++    PDF_POSITION_TOP_CENTRE -> PdfPageNumberPosition.TopCentre
++    PDF_POSITION_TOP_LEFT -> PdfPageNumberPosition.TopLeft
++    PDF_POSITION_TOP_RIGHT -> PdfPageNumberPosition.TopRight
++    else -> PdfPageNumberPosition.BottomCentre
++}
++
++private fun isPdfToolTarget(targetId: TargetId): Boolean = when (targetId) {
++    TargetId.PdfRotate,
++    TargetId.PdfOrganize,
++    TargetId.PdfPageNumbers,
++    TargetId.PdfWatermark,
++    TargetId.PdfCrop -> true
++    else -> false
++}
++
++/** Options for the offline PDF tools: rotate, organise, page numbers, watermark, crop. */
++@Composable
++private fun PdfToolPanel(
++    texts: UiText,
++    menuPrefix: String,
++    targetId: TargetId,
++    tool: PdfToolOptions,
++    openMenuId: String?,
++    onOpenMenuChange: (String?) -> Unit,
++    onToolChange: (PdfToolOptions) -> Unit
++) {
++    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
++        when (targetId) {
++            TargetId.PdfRotate -> OptionDropdown(
++                "${menuPrefix}pdf-rotate",
++                "Rotate by",
++                pdfRotateLabelFor(tool.rotateDegrees),
++                PDF_ROTATE_OPTIONS,
++                texts,
++                openMenuId,
++                onOpenMenuChange
++            ) { value -> onToolChange(tool.copy(rotateDegrees = pdfRotateForLabel(value))) }
++
++            TargetId.PdfOrganize -> {
++                OptionTextField(
++                    value = tool.pageOrder,
++                    label = "Page order",
++                    onValueChange = { value -> onToolChange(tool.copy(pageOrder = value)) }
++                )
++                Text(
++                    text = "List the pages to keep, in order, like 1,3,5-7. A page you leave out is dropped.",
++                    style = MaterialTheme.typography.bodySmall,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    maxLines = 3,
++                    overflow = TextOverflow.Ellipsis
++                )
++            }
++
++            TargetId.PdfPageNumbers -> {
++                OptionDropdown(
++                    "${menuPrefix}pdf-page-number-position",
++                    "Position",
++                    pdfPageNumberPositionLabelFor(tool.pageNumberPosition),
++                    PDF_PAGE_NUMBER_POSITION_OPTIONS,
++                    texts,
++                    openMenuId,
++                    onOpenMenuChange
++                ) { value -> onToolChange(tool.copy(pageNumberPosition = pdfPageNumberPositionForLabel(value))) }
++                TrimSecondsField(
++                    value = tool.pageNumberStart.toDouble(),
++                    label = "Start at",
++                    isError = false,
++                    onValueChange = { onToolChange(tool.copy(pageNumberStart = (it ?: 1.0).toInt().coerceAtLeast(1))) }
++                )
++            }
++
++            TargetId.PdfWatermark -> {
++                OptionTextField(
++                    value = tool.watermarkText.orEmpty(),
++                    label = "Watermark text",
++                    onValueChange = { value -> onToolChange(tool.copy(watermarkText = value.ifBlank { null })) }
++                )
++                OptionDropdown(
++                    "${menuPrefix}pdf-watermark-angle",
++                    "Angle",
++                    pdfWatermarkAngleLabelFor(tool.watermarkRotation),
++                    PDF_WATERMARK_ANGLE_OPTIONS,
++                    texts,
++                    openMenuId,
++                    onOpenMenuChange
++                ) { value -> onToolChange(tool.copy(watermarkRotation = pdfWatermarkAngleForLabel(value))) }
++                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
++                    Text(
++                        text = stringResource(
++                            R.string.display_option_dropdown_1_s_2_s,
++                            "Opacity",
++                            "${tool.watermarkOpacity}%"
++                        ),
++                        style = MaterialTheme.typography.bodySmall,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant
++                    )
++                    Slider(
++                        value = tool.watermarkOpacity.coerceIn(5, 100).toFloat(),
++                        onValueChange = { percent ->
++                            onToolChange(tool.copy(watermarkOpacity = Math.round(percent).toInt().coerceIn(5, 100)))
++                        },
++                        valueRange = 5f..100f,
++                        steps = 94,
++                        modifier = Modifier.fillMaxWidth()
++                    )
++                }
++            }
++
++            TargetId.PdfCrop -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
++                Text(
++                    text = stringResource(
++                        R.string.display_option_dropdown_1_s_2_s,
++                        "Crop margin",
++                        "${tool.cropMarginPercent}%"
++                    ),
++                    style = MaterialTheme.typography.bodySmall,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant
++                )
++                Slider(
++                    value = tool.cropMarginPercent.coerceIn(0, 40).toFloat(),
++                    onValueChange = { percent ->
++                        onToolChange(tool.copy(cropMarginPercent = Math.round(percent).toInt().coerceIn(0, 40)))
++                    },
++                    valueRange = 0f..40f,
++                    steps = 39,
++                    modifier = Modifier.fillMaxWidth()
++                )
++            }
++
++            else -> Unit
+         }
+@@ -5935,3 +6525,5 @@ private fun PdfOptions(
+     onRenderQualityChange: (String) -> Unit = {},
+-    onCompressionPresetChange: (String) -> Unit = {}
++    onCompressionPresetChange: (String) -> Unit = {},
++    pdfToolOptions: PdfToolOptions = PdfToolOptions(),
++    onPdfToolOptionsChange: (PdfToolOptions) -> Unit = {}
+ ) {
+@@ -5953,2 +6545,17 @@ private fun PdfOptions(
+ 
++    if (isPdfToolTarget(targetFormat.id)) {
++        OptionGrid {
++            PdfToolPanel(
++                texts = texts,
++                menuPrefix = menuPrefix,
++                targetId = targetFormat.id,
++                tool = pdfToolOptions,
++                openMenuId = openMenuId,
++                onOpenMenuChange = onOpenMenuChange,
++                onToolChange = onPdfToolOptionsChange
++            )
++        }
++        return
++    }
++
+     if (
+@@ -6107,2 +6714,3 @@ private fun QueueActions(
          }
 +        val startShape = RoundedCornerShape(100.dp)
          Button(
-@@ -6110,3 +6501,12 @@ private fun QueueActions(
+@@ -6110,3 +6718,12 @@ private fun QueueActions(
              enabled = !isRunning,
 -            modifier = Modifier.weight(1f)
 +            shape = startShape,
@@ -1092,18 +1625,18 @@ index 49da19f..7bc0ea7 100644
 +                .weight(1f)
 +                .then(if (isRunning) Modifier else Modifier.background(SpectrumBrush, startShape))
          ) {
-@@ -6115,3 +6515,3 @@ private fun QueueActions(
+@@ -6115,3 +6732,3 @@ private fun QueueActions(
                  contentDescription = null,
 -                tint = MaterialTheme.colorScheme.onPrimary,
 +                tint = if (isRunning) MaterialTheme.colorScheme.onSurfaceVariant else SpectrumOnColor,
                  modifier = Modifier.size(18.dp)
-@@ -6380,3 +6780,4 @@ private fun QueuedFileOptionsPanel(
+@@ -6380,3 +6997,4 @@ private fun QueuedFileOptionsPanel(
          when (file.category) {
 -            FileCategory.Video -> VideoOptions(
 +            FileCategory.Video -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 +            VideoOptions(
                  texts = texts,
-@@ -6569,3 +6970,13 @@ private fun QueuedFileOptionsPanel(
+@@ -6569,3 +7187,13 @@ private fun QueuedFileOptionsPanel(
              )
 -            FileCategory.Audio -> AudioOptions(
 +            TargetSizeField(
@@ -1118,7 +1651,7 @@ index 49da19f..7bc0ea7 100644
 +            FileCategory.Audio -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 +            AudioOptions(
                  texts = texts,
-@@ -6645,3 +7056,12 @@ private fun QueuedFileOptionsPanel(
+@@ -6645,3 +7273,12 @@ private fun QueuedFileOptionsPanel(
              )
 -            FileCategory.Image -> {
 +            TargetSizeField(
@@ -1132,7 +1665,7 @@ index 49da19f..7bc0ea7 100644
 +            }
 +            FileCategory.Image -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                  ImageOptions(
-@@ -6657,3 +7077,11 @@ private fun QueuedFileOptionsPanel(
+@@ -6657,3 +7294,11 @@ private fun QueuedFileOptionsPanel(
                      onQualityChange = { value ->
 -                        onUpdateFile(file.copy(imageOptions = imageOptionsForQuality(value, selectedTarget.targetFormat)))
 +                        onUpdateFile(file.copy(imageOptions = imageOptionsForQuality(value, selectedTarget.targetFormat, file.imageOptions)))
@@ -1145,7 +1678,7 @@ index 49da19f..7bc0ea7 100644
 +                    onEditOptionsChange = { edit ->
 +                        onUpdateFile(file.copy(imageOptions = file.imageOptions.copy(edit = edit)))
                      },
-@@ -6692,2 +7120,10 @@ private fun QueuedFileOptionsPanel(
+@@ -6692,2 +7337,10 @@ private fun QueuedFileOptionsPanel(
                  }
 +                TargetSizeField(
 +                    valueBytes = file.imageOptions.targetSizeBytes,
@@ -1156,7 +1689,14 @@ index 49da19f..7bc0ea7 100644
 +                    }
 +                )
              }
-@@ -6754,2 +7190,92 @@ private fun GifImageOptions(
+@@ -6706,2 +7359,6 @@ private fun QueuedFileOptionsPanel(
+                     onUpdateFile(file.copy(pdfOptions = file.pdfOptions.copy(compressionPreset = pdfCompressionPresetToOption(value))))
++                },
++                pdfToolOptions = file.pdfOptions.tool,
++                onPdfToolOptionsChange = { tool ->
++                    onUpdateFile(file.copy(pdfOptions = file.pdfOptions.copy(tool = tool)))
+                 }
+@@ -6754,2 +7411,92 @@ private fun GifImageOptions(
  
 +private const val TARGET_SIZE_KB = "KB"
 +private const val TARGET_SIZE_MB = "MB"
@@ -1249,7 +1789,7 @@ index 49da19f..7bc0ea7 100644
 +}
 +
  @Composable
-@@ -7060,2 +7586,37 @@ internal fun FileCategory.icon(): ImageVector {
+@@ -7060,2 +7807,37 @@ internal fun FileCategory.icon(): ImageVector {
  
 +// Sarvam's identity is a continuous blue-to-orange spectrum. We keep colour still
 +// everywhere except the single primary action, where the spectrum carries motion.
@@ -1287,7 +1827,7 @@ index 49da19f..7bc0ea7 100644
 +)
 +
  private fun zenConverterColorScheme(
-@@ -7094,2 +7655,12 @@ private fun zenConverterColorScheme(
+@@ -7094,2 +7876,12 @@ private fun zenConverterColorScheme(
  
 +    // Anthropic's canvas is warm paper, never pure white, and its ink is a warm
 +    // near-black. Those two decisions carry most of the brand.
@@ -1300,7 +1840,7 @@ index 49da19f..7bc0ea7 100644
 +    val warmText = Color(0xFFF5F3EC)
 +
      return if (!isDark) {
-@@ -7098,14 +7669,25 @@ private fun zenConverterColorScheme(
+@@ -7098,14 +7890,25 @@ private fun zenConverterColorScheme(
              onPrimary = onPrimary,
 +            primaryContainer = ivoryMedium,
 +            onPrimaryContainer = ink,
@@ -1336,7 +1876,7 @@ index 49da19f..7bc0ea7 100644
 +            error = Color(0xFF9E3B2F),
 +            onError = Color(0xFFFFF8F5)
          )
-@@ -7115,14 +7697,25 @@ private fun zenConverterColorScheme(
+@@ -7115,14 +7918,25 @@ private fun zenConverterColorScheme(
              onPrimary = onPrimary,
 +            primaryContainer = Color(0xFF2A2A26),
 +            onPrimaryContainer = warmText,
@@ -1370,7 +1910,7 @@ index 49da19f..7bc0ea7 100644
 +            error = Color(0xFFD98A7C),
 +            onError = Color(0xFF2A0C06)
          )
-@@ -7132,14 +7725,25 @@ private fun zenConverterColorScheme(
+@@ -7132,14 +7946,25 @@ private fun zenConverterColorScheme(
              onPrimary = onPrimary,
 +            primaryContainer = Color(0xFF3A3A34),
 +            onPrimaryContainer = warmText,
@@ -1406,13 +1946,13 @@ index 49da19f..7bc0ea7 100644
 +            error = Color(0xFFE0907F),
 +            onError = Color(0xFF2A0C06)
          )
-@@ -7608,3 +8212,4 @@ private fun imageOptionsForQuality(
+@@ -7608,3 +8433,4 @@ private fun imageOptionsForQuality(
      value: String,
 -    targetFormat: TargetFormat
 +    targetFormat: TargetFormat,
 +    current: ImageExportOptions? = null
  ): ImageExportOptions {
-@@ -7613,3 +8218,5 @@ private fun imageOptionsForQuality(
+@@ -7613,3 +8439,5 @@ private fun imageOptionsForQuality(
          webpLossless = supportsWebpLosslessQuality(targetFormat) &&
 -            value == IMAGE_QUALITY_LOSSLESS
 +            value == IMAGE_QUALITY_LOSSLESS,
