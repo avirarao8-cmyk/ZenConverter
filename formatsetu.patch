@@ -960,14 +960,13 @@ index 025ef5a..04ee105 100644
      Woff2("WOFF2"),
 diff --git a/app/src/main/java/org/zenconverter/app/download/LinkDownloader.kt b/app/src/main/java/org/zenconverter/app/download/LinkDownloader.kt
 new file mode 100644
-index 0000000..4a561c8
+index 0000000..6c9114f
 --- /dev/null
 +++ b/app/src/main/java/org/zenconverter/app/download/LinkDownloader.kt
 @@ -0,0 +1,139 @@
 +package org.zenconverter.app.download
 +
 +import android.content.Context
-+import com.yausername.youtubedl_android.DownloadProgressCallback
 +import com.yausername.youtubedl_android.YoutubeDL
 +import com.yausername.youtubedl_android.YoutubeDLRequest
 +import java.io.File
@@ -1074,14 +1073,15 @@ index 0000000..4a561c8
 +        // Ask yt-dlp for the finished path so the caller never has to guess the file name.
 +        request.addOption("--print", "after_move:filepath")
 +
-+        val callback = DownloadProgressCallback { progress, etaSeconds ->
-+            onProgress(progress, etaSeconds)
-+        }
-+        val response = YoutubeDL.getInstance().execute(request, callback, processId)
++        val response = YoutubeDL.getInstance().execute(
++            request = request,
++            processId = processId,
++            callback = { progress, etaSeconds, _ -> onProgress(progress, etaSeconds) }
++        )
 +        val reportedPath = response.out
-+            ?.lineSequence()
-+            ?.map { it.trim() }
-+            ?.lastOrNull { it.isNotEmpty() }
++            .lineSequence()
++            .map { it.trim() }
++            .lastOrNull { it.isNotEmpty() }
 +        val file = reportedPath
 +            ?.let { File(it) }
 +            ?.takeIf { it.isFile }
