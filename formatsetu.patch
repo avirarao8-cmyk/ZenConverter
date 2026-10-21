@@ -1,5 +1,5 @@
 diff --git a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt b/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
-index 917e483..2c033cc 100644
+index 917e483..a2c22f3 100644
 --- a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
 +++ b/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
 @@ -73,2 +73,7 @@ import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
@@ -713,7 +713,28 @@ index 917e483..2c033cc 100644
 +                    ?.coerceAtLeast(MIN_TARGET_AUDIO_BITRATE_BPS)
 +                (targetAudioBitrate ?: audioOptions.audioBitrate)?.let { bitrate ->
                      add("-b:a")
-@@ -7176,3 +7812,8 @@ class ConversionService : Service() {
+@@ -5415,2 +6051,14 @@ class ConversionService : Service() {
+             )
++            "aac" -> FfmpegAudioProfile(
++                codec = FFMPEG_AAC_ENCODER,
++                format = "adts",
++                requiredEncoder = FFMPEG_AAC_ENCODER
++            )
++            "aiff" -> FfmpegAudioProfile(
++                codec = FFMPEG_PCM_S16BE_ENCODER,
++                format = "aiff",
++                supportsBitrate = false,
++                requiredEncoder = FFMPEG_PCM_S16BE_ENCODER
++            )
++            "m4r" -> ffmpegAacAudioProfile()
+             else -> null
+@@ -7138,2 +7786,5 @@ class ConversionService : Service() {
+                     "opus" -> OutputProfile(extension = "opus", mimeType = MIME_TYPE_OPUS, kind = OutputMediaKind.Audio)
++                    "aac" -> OutputProfile(extension = "aac", mimeType = MIME_TYPE_AAC, kind = OutputMediaKind.Audio)
++                    "aiff" -> OutputProfile(extension = "aiff", mimeType = MIME_TYPE_AIFF, kind = OutputMediaKind.Audio)
++                    "m4r" -> OutputProfile(extension = "m4r", mimeType = MIME_TYPE_M4R, kind = OutputMediaKind.Audio)
+                     else -> null
+@@ -7176,3 +7827,8 @@ class ConversionService : Service() {
                          TargetId.fromKey(input.targetFormat) == TargetId.PdfDecrypt ||
 -                        TargetId.fromKey(input.targetFormat) == TargetId.PdfCompress ->
 +                        TargetId.fromKey(input.targetFormat) == TargetId.PdfCompress ||
@@ -723,6 +744,24 @@ index 917e483..2c033cc 100644
 +                        TargetId.fromKey(input.targetFormat) == TargetId.PdfWatermark ||
 +                        TargetId.fromKey(input.targetFormat) == TargetId.PdfCrop ->
                          OutputProfile(extension = "pdf", mimeType = MIME_TYPE_PDF, kind = OutputMediaKind.Document)
+@@ -7219,3 +7875,6 @@ class ConversionService : Service() {
+             normalized.contains("mp3") -> "mp3"
+-            normalized.contains("m4a") || normalized.contains("aac") -> "m4a"
++            normalized.contains("m4a") -> "m4a"
++            normalized.contains("aac") -> "aac"
++            normalized.contains("aiff") || normalized.contains("aif") -> "aiff"
++            normalized.contains("m4r") -> "m4r"
+             normalized.contains("wav") -> "wav"
+@@ -7622,2 +8281,3 @@ class ConversionService : Service() {
+         private const val FFMPEG_OPUS_ENCODER = "libopus"
++        private const val FFMPEG_PCM_S16BE_ENCODER = "pcm_s16be"
+         private val OPUS_SUPPORTED_SAMPLE_RATES = setOf(48_000, 24_000, 16_000, 12_000, 8_000)
+@@ -7652,2 +8312,5 @@ class ConversionService : Service() {
+         private const val MIME_TYPE_M4A = "audio/mp4"
++        private const val MIME_TYPE_AAC = "audio/aac"
++        private const val MIME_TYPE_AIFF = "audio/aiff"
++        private const val MIME_TYPE_M4R = "audio/mp4"
+         private const val MIME_TYPE_WAV = "audio/wav"
 diff --git a/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt b/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
 index bd42038..8491722 100644
 --- a/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
@@ -891,10 +930,16 @@ index bd42038..8491722 100644
 +    val tool: PdfToolOptions = PdfToolOptions()
  )
 diff --git a/app/src/main/java/org/zenconverter/app/conversion/TargetId.kt b/app/src/main/java/org/zenconverter/app/conversion/TargetId.kt
-index 025ef5a..12a703f 100644
+index 025ef5a..04ee105 100644
 --- a/app/src/main/java/org/zenconverter/app/conversion/TargetId.kt
 +++ b/app/src/main/java/org/zenconverter/app/conversion/TargetId.kt
-@@ -27,2 +27,7 @@ enum class TargetId(val key: String) {
+@@ -16,2 +16,5 @@ enum class TargetId(val key: String) {
+     Opus("OPUS"),
++    Aac("AAC"),
++    Aiff("AIFF"),
++    M4r("M4R"),
+     Jpg("JPG"),
+@@ -27,2 +30,7 @@ enum class TargetId(val key: String) {
      PdfDecrypt("pdf_decrypt"),
 +    PdfRotate("pdf_rotate"),
 +    PdfOrganize("pdf_organize"),
@@ -917,7 +962,7 @@ index 23f94f9..a8d50db 100644
 +
      val pageSize: String
 diff --git a/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt b/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
-index 49da19f..7533ec9 100644
+index 49da19f..0541d3e 100644
 --- a/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
 +++ b/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
 @@ -126,2 +126,5 @@ import androidx.compose.material3.RangeSliderState
@@ -952,7 +997,15 @@ index 49da19f..7533ec9 100644
  import org.zenconverter.app.conversion.PdfSecurityOptions
 +import org.zenconverter.app.conversion.PdfToolOptions
  import org.zenconverter.app.conversion.VideoAdvancedOptions
-@@ -307,3 +322,8 @@ enum class FileCategory(
+@@ -272,3 +287,6 @@ enum class FileCategory(
+             TargetFormat(TargetId.Wma, "wma", "Re-encode"),
+-            TargetFormat(TargetId.Opus, "opus", "Re-encode")
++            TargetFormat(TargetId.Opus, "opus", "Re-encode"),
++            TargetFormat(TargetId.Aac, "aac", "Music / streams"),
++            TargetFormat(TargetId.Aiff, "aiff", "Uncompressed"),
++            TargetFormat(TargetId.M4r, "m4r", "iPhone ringtone")
+         )
+@@ -307,3 +325,8 @@ enum class FileCategory(
              TargetFormat(TargetId.PdfEncrypt, "pdf", "Password protect"),
 -            TargetFormat(TargetId.PdfDecrypt, "pdf", "Remove password")
 +            TargetFormat(TargetId.PdfDecrypt, "pdf", "Remove password"),
@@ -962,7 +1015,7 @@ index 49da19f..7533ec9 100644
 +            TargetFormat(TargetId.PdfWatermark, "pdf", "Stamp a watermark"),
 +            TargetFormat(TargetId.PdfCrop, "pdf", "Trim margins")
          )
-@@ -508,12 +528,12 @@ internal enum class AccentColorOption(
+@@ -508,12 +531,12 @@ internal enum class AccentColorOption(
      Dynamic("Material You", Color(0xFF6750A4), Color.White, Color(0xFFD0BCFF), Color(0xFF381E72)),
 -    Charcoal("Charcoal", Color(0xFF111111), Color.White, Color(0xFFE5E7EB), Color(0xFF111111)),
 -    DeepNavy("Deep Navy", Color(0xFF36454F), Color.White, Color(0xFF93C5FD), Color(0xFF0F172A)),
@@ -985,7 +1038,7 @@ index 49da19f..7533ec9 100644
 +    FernGreen("Fern Green", Color(0xFF4E8C6A), Color(0xFFFAF9F5), Color(0xFF8FD3B0), Color(0xFF0A2117)),
 +    DeepPurple("Deep Purple", Color(0xFF7C5CE0), Color(0xFFFFFDF8), Color(0xFFB9A6F2), Color(0xFF1C1233));
  
-@@ -965,3 +985,7 @@ fun ZenConverterApp(
+@@ -965,3 +988,7 @@ fun ZenConverterApp(
      ) {
 -        MaterialTheme(colorScheme = zenConverterColorScheme(context, accent, isDark, isOled)) {
 +        MaterialTheme(
@@ -994,17 +1047,91 @@ index 49da19f..7533ec9 100644
 +            shapes = zenConverterShapes()
 +        ) {
              Surface(
-@@ -1867,3 +1891,3 @@ private fun Header(
+@@ -1867,3 +1894,3 @@ private fun Header(
                      .size(40.dp)
 -                    .clip(RoundedCornerShape(8.dp))
 +                    .clip(RoundedCornerShape(12.dp))
              )
-@@ -1877,3 +1901,3 @@ private fun Header(
+@@ -1877,3 +1904,3 @@ private fun Header(
                      style = MaterialTheme.typography.titleLarge,
 -                    fontWeight = FontWeight.SemiBold,
 +                    fontWeight = FontWeight.Medium,
                      color = MaterialTheme.colorScheme.onBackground,
-@@ -5820,2 +5844,346 @@ private fun AdvancedOptionsPanel(
+@@ -3104,2 +3131,16 @@ private fun BatchVideoTargetOptions(
+     OptionGrid {
++        TargetSizeField(
++            valueBytes = commonBatchValue(files) { it.videoOptions.targetSizeBytes },
++            label = texts.targetSize,
++            hint = texts.targetSizeHint(),
++            onValueChange = { bytes ->
++                onOpenMenuChange(null)
++                onUpdateFiles(
++                    files.map { file ->
++                        file.copy(videoOptions = file.videoOptions.copy(targetSizeBytes = bytes))
++                    }
++                )
++            }
++        )
++
+         if (!isGifTarget) {
+@@ -3379,2 +3420,16 @@ private fun BatchAudioTargetOptions(
+     OptionGrid {
++        TargetSizeField(
++            valueBytes = commonBatchValue(files) { it.audioOptions.targetSizeBytes },
++            label = texts.targetSize,
++            hint = texts.targetSizeHint(),
++            onValueChange = { bytes ->
++                onOpenMenuChange(null)
++                onUpdateFiles(
++                    files.map { file ->
++                        file.copy(audioOptions = file.audioOptions.copy(targetSizeBytes = bytes))
++                    }
++                )
++            }
++        )
++
+         if (isMp3Target(target)) {
+@@ -3529,2 +3584,9 @@ private fun BatchAudioTargetOptions(
+ }
++/** Shared value across a batch, or null when the files disagree. */
++private fun <T> commonBatchValue(files: List<QueuedFile>, selector: (QueuedFile) -> T): T? {
++    if (files.isEmpty()) return null
++    val values = files.map(selector).distinct()
++    return if (values.size == 1) values.first() else null
++}
++
+ @Composable
+@@ -3589,2 +3651,29 @@ private fun BatchImageTargetOptions(
+             )
++        },
++        qualityPercent = commonBatchValue(files) { it.imageOptions.quality } ?: 85,
++        onQualityPercentChange = { percent ->
++            onOpenMenuChange(null)
++            onUpdateFiles(
++                files.map { file ->
++                    file.copy(imageOptions = file.imageOptions.copy(quality = percent))
++                }
++            )
++        },
++        editOptions = commonBatchValue(files) { it.imageOptions.edit } ?: ImageEditOptions(),
++        onEditOptionsChange = { edit ->
++            onOpenMenuChange(null)
++            onUpdateFiles(
++                files.map { file ->
++                    file.copy(imageOptions = file.imageOptions.copy(edit = edit))
++                }
++            )
++        },
++        targetSizeBytes = commonBatchValue(files) { it.imageOptions.targetSizeBytes },
++        onTargetSizeChange = { bytes ->
++            onOpenMenuChange(null)
++            onUpdateFiles(
++                files.map { file ->
++                    file.copy(imageOptions = file.imageOptions.copy(targetSizeBytes = bytes))
++                }
++            )
+         }
+@@ -5820,2 +5909,346 @@ private fun AdvancedOptionsPanel(
  
 +private const val IMAGE_ADJUST_OFF = "Off"
 +private const val IMAGE_RESIZE_EXACT = "Exact size"
@@ -1351,16 +1478,18 @@ index 49da19f..7533ec9 100644
 +}
 +
  @Composable
-@@ -5833,3 +6201,7 @@ private fun ImageOptions(
+@@ -5833,3 +6266,9 @@ private fun ImageOptions(
      onPdfPageModeChange: (String) -> Unit,
 -    onSuperResolutionChange: (String) -> Unit
 +    onSuperResolutionChange: (String) -> Unit,
 +    qualityPercent: Int = 85,
 +    onQualityPercentChange: (Int) -> Unit = {},
 +    editOptions: ImageEditOptions = ImageEditOptions(),
-+    onEditOptionsChange: (ImageEditOptions) -> Unit = {}
++    onEditOptionsChange: (ImageEditOptions) -> Unit = {},
++    targetSizeBytes: Long? = null,
++    onTargetSizeChange: (Long?) -> Unit = {}
  ) {
-@@ -5921,2 +6293,220 @@ private fun ImageOptions(
+@@ -5921,2 +6360,227 @@ private fun ImageOptions(
              )
 +            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
 +                Text(
@@ -1379,6 +1508,13 @@ index 49da19f..7533ec9 100644
 +                )
 +            }
 +        }
++
++        TargetSizeField(
++            valueBytes = targetSizeBytes,
++            label = texts.targetSize,
++            hint = texts.targetSizeHint(),
++            onValueChange = onTargetSizeChange
++        )
 +
 +        ImageAdjustPanel(
 +            texts = texts,
@@ -1581,14 +1717,14 @@ index 49da19f..7533ec9 100644
 +
 +            else -> Unit
          }
-@@ -5935,3 +6525,5 @@ private fun PdfOptions(
+@@ -5935,3 +6599,5 @@ private fun PdfOptions(
      onRenderQualityChange: (String) -> Unit = {},
 -    onCompressionPresetChange: (String) -> Unit = {}
 +    onCompressionPresetChange: (String) -> Unit = {},
 +    pdfToolOptions: PdfToolOptions = PdfToolOptions(),
 +    onPdfToolOptionsChange: (PdfToolOptions) -> Unit = {}
  ) {
-@@ -5953,2 +6545,17 @@ private fun PdfOptions(
+@@ -5953,2 +6619,17 @@ private fun PdfOptions(
  
 +    if (isPdfToolTarget(targetFormat.id)) {
 +        OptionGrid {
@@ -1606,11 +1742,11 @@ index 49da19f..7533ec9 100644
 +    }
 +
      if (
-@@ -6107,2 +6714,3 @@ private fun QueueActions(
+@@ -6107,2 +6788,3 @@ private fun QueueActions(
          }
 +        val startShape = RoundedCornerShape(100.dp)
          Button(
-@@ -6110,3 +6718,12 @@ private fun QueueActions(
+@@ -6110,3 +6792,12 @@ private fun QueueActions(
              enabled = !isRunning,
 -            modifier = Modifier.weight(1f)
 +            shape = startShape,
@@ -1624,18 +1760,18 @@ index 49da19f..7533ec9 100644
 +                .weight(1f)
 +                .then(if (isRunning) Modifier else Modifier.background(SpectrumBrush, startShape))
          ) {
-@@ -6115,3 +6732,3 @@ private fun QueueActions(
+@@ -6115,3 +6806,3 @@ private fun QueueActions(
                  contentDescription = null,
 -                tint = MaterialTheme.colorScheme.onPrimary,
 +                tint = if (isRunning) MaterialTheme.colorScheme.onSurfaceVariant else SpectrumOnColor,
                  modifier = Modifier.size(18.dp)
-@@ -6380,3 +6997,4 @@ private fun QueuedFileOptionsPanel(
+@@ -6380,3 +7071,4 @@ private fun QueuedFileOptionsPanel(
          when (file.category) {
 -            FileCategory.Video -> VideoOptions(
 +            FileCategory.Video -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 +            VideoOptions(
                  texts = texts,
-@@ -6569,3 +7187,13 @@ private fun QueuedFileOptionsPanel(
+@@ -6569,3 +7261,13 @@ private fun QueuedFileOptionsPanel(
              )
 -            FileCategory.Audio -> AudioOptions(
 +            TargetSizeField(
@@ -1650,7 +1786,7 @@ index 49da19f..7533ec9 100644
 +            FileCategory.Audio -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 +            AudioOptions(
                  texts = texts,
-@@ -6645,3 +7273,12 @@ private fun QueuedFileOptionsPanel(
+@@ -6645,3 +7347,12 @@ private fun QueuedFileOptionsPanel(
              )
 -            FileCategory.Image -> {
 +            TargetSizeField(
@@ -1664,7 +1800,7 @@ index 49da19f..7533ec9 100644
 +            }
 +            FileCategory.Image -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                  ImageOptions(
-@@ -6657,3 +7294,11 @@ private fun QueuedFileOptionsPanel(
+@@ -6657,3 +7368,15 @@ private fun QueuedFileOptionsPanel(
                      onQualityChange = { value ->
 -                        onUpdateFile(file.copy(imageOptions = imageOptionsForQuality(value, selectedTarget.targetFormat)))
 +                        onUpdateFile(file.copy(imageOptions = imageOptionsForQuality(value, selectedTarget.targetFormat, file.imageOptions)))
@@ -1676,26 +1812,19 @@ index 49da19f..7533ec9 100644
 +                    editOptions = file.imageOptions.edit,
 +                    onEditOptionsChange = { edit ->
 +                        onUpdateFile(file.copy(imageOptions = file.imageOptions.copy(edit = edit)))
-                     },
-@@ -6692,2 +7337,10 @@ private fun QueuedFileOptionsPanel(
-                 }
-+                TargetSizeField(
-+                    valueBytes = file.imageOptions.targetSizeBytes,
-+                    label = texts.targetSize,
-+                    hint = texts.targetSizeHint(),
-+                    onValueChange = { bytes ->
++                    },
++                    targetSizeBytes = file.imageOptions.targetSizeBytes,
++                    onTargetSizeChange = { bytes ->
 +                        onUpdateFile(file.copy(imageOptions = file.imageOptions.copy(targetSizeBytes = bytes)))
-+                    }
-+                )
-             }
-@@ -6706,2 +7359,6 @@ private fun QueuedFileOptionsPanel(
+                     },
+@@ -6706,2 +7429,6 @@ private fun QueuedFileOptionsPanel(
                      onUpdateFile(file.copy(pdfOptions = file.pdfOptions.copy(compressionPreset = pdfCompressionPresetToOption(value))))
 +                },
 +                pdfToolOptions = file.pdfOptions.tool,
 +                onPdfToolOptionsChange = { tool ->
 +                    onUpdateFile(file.copy(pdfOptions = file.pdfOptions.copy(tool = tool)))
                  }
-@@ -6754,2 +7411,92 @@ private fun GifImageOptions(
+@@ -6754,2 +7481,92 @@ private fun GifImageOptions(
  
 +private const val TARGET_SIZE_KB = "KB"
 +private const val TARGET_SIZE_MB = "MB"
@@ -1788,7 +1917,7 @@ index 49da19f..7533ec9 100644
 +}
 +
  @Composable
-@@ -7060,2 +7807,37 @@ internal fun FileCategory.icon(): ImageVector {
+@@ -7060,2 +7877,37 @@ internal fun FileCategory.icon(): ImageVector {
  
 +// Sarvam's identity is a continuous blue-to-orange spectrum. We keep colour still
 +// everywhere except the single primary action, where the spectrum carries motion.
@@ -1826,7 +1955,7 @@ index 49da19f..7533ec9 100644
 +)
 +
  private fun zenConverterColorScheme(
-@@ -7094,2 +7876,12 @@ private fun zenConverterColorScheme(
+@@ -7094,2 +7946,12 @@ private fun zenConverterColorScheme(
  
 +    // Anthropic's canvas is warm paper, never pure white, and its ink is a warm
 +    // near-black. Those two decisions carry most of the brand.
@@ -1839,7 +1968,7 @@ index 49da19f..7533ec9 100644
 +    val warmText = Color(0xFFF5F3EC)
 +
      return if (!isDark) {
-@@ -7098,14 +7890,25 @@ private fun zenConverterColorScheme(
+@@ -7098,14 +7960,25 @@ private fun zenConverterColorScheme(
              onPrimary = onPrimary,
 +            primaryContainer = ivoryMedium,
 +            onPrimaryContainer = ink,
@@ -1875,7 +2004,7 @@ index 49da19f..7533ec9 100644
 +            error = Color(0xFF9E3B2F),
 +            onError = Color(0xFFFFF8F5)
          )
-@@ -7115,14 +7918,25 @@ private fun zenConverterColorScheme(
+@@ -7115,14 +7988,25 @@ private fun zenConverterColorScheme(
              onPrimary = onPrimary,
 +            primaryContainer = Color(0xFF2A2A26),
 +            onPrimaryContainer = warmText,
@@ -1909,7 +2038,7 @@ index 49da19f..7533ec9 100644
 +            error = Color(0xFFD98A7C),
 +            onError = Color(0xFF2A0C06)
          )
-@@ -7132,14 +7946,25 @@ private fun zenConverterColorScheme(
+@@ -7132,14 +8016,25 @@ private fun zenConverterColorScheme(
              onPrimary = onPrimary,
 +            primaryContainer = Color(0xFF3A3A34),
 +            onPrimaryContainer = warmText,
@@ -1945,13 +2074,13 @@ index 49da19f..7533ec9 100644
 +            error = Color(0xFFE0907F),
 +            onError = Color(0xFF2A0C06)
          )
-@@ -7608,3 +8433,4 @@ private fun imageOptionsForQuality(
+@@ -7608,3 +8503,4 @@ private fun imageOptionsForQuality(
      value: String,
 -    targetFormat: TargetFormat
 +    targetFormat: TargetFormat,
 +    current: ImageExportOptions? = null
  ): ImageExportOptions {
-@@ -7613,3 +8439,5 @@ private fun imageOptionsForQuality(
+@@ -7613,3 +8509,5 @@ private fun imageOptionsForQuality(
          webpLossless = supportsWebpLosslessQuality(targetFormat) &&
 -            value == IMAGE_QUALITY_LOSSLESS
 +            value == IMAGE_QUALITY_LOSSLESS,
