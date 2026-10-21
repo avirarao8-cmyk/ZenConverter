@@ -618,7 +618,7 @@ index 23f94f9..a8d50db 100644
 +
      val pageSize: String
 diff --git a/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt b/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
-index 49da19f..f9ff278 100644
+index 49da19f..7bc0ea7 100644
 --- a/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
 +++ b/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
 @@ -126,2 +126,5 @@ import androidx.compose.material3.RangeSliderState
@@ -635,7 +635,19 @@ index 49da19f..f9ff278 100644
  import androidx.compose.ui.unit.dp
 +import androidx.compose.ui.unit.sp
  import androidx.compose.ui.unit.Dp
-@@ -508,12 +513,12 @@ internal enum class AccentColorOption(
+@@ -190,3 +195,11 @@ import org.zenconverter.app.conversion.FileBasicInfo
+ import org.zenconverter.app.conversion.GifFrameExportMode
++import org.zenconverter.app.conversion.ImageBlurMode
++import org.zenconverter.app.conversion.ImageColorMode
++import org.zenconverter.app.conversion.ImageCropMode
++import org.zenconverter.app.conversion.ImageEditOptions
+ import org.zenconverter.app.conversion.ImageExportOptions
++import org.zenconverter.app.conversion.ImageFlipMode
++import org.zenconverter.app.conversion.ImageResizeMode
++import org.zenconverter.app.conversion.ImageRotateMode
++import org.zenconverter.app.conversion.ImageSizeUnit
+ import org.zenconverter.app.conversion.ImageSuperResolutionMode
+@@ -508,12 +521,12 @@ internal enum class AccentColorOption(
      Dynamic("Material You", Color(0xFF6750A4), Color.White, Color(0xFFD0BCFF), Color(0xFF381E72)),
 -    Charcoal("Charcoal", Color(0xFF111111), Color.White, Color(0xFFE5E7EB), Color(0xFF111111)),
 -    DeepNavy("Deep Navy", Color(0xFF36454F), Color.White, Color(0xFF93C5FD), Color(0xFF0F172A)),
@@ -658,7 +670,7 @@ index 49da19f..f9ff278 100644
 +    FernGreen("Fern Green", Color(0xFF4E8C6A), Color(0xFFFAF9F5), Color(0xFF8FD3B0), Color(0xFF0A2117)),
 +    DeepPurple("Deep Purple", Color(0xFF7C5CE0), Color(0xFFFFFDF8), Color(0xFFB9A6F2), Color(0xFF1C1233));
  
-@@ -965,3 +970,7 @@ fun ZenConverterApp(
+@@ -965,3 +978,7 @@ fun ZenConverterApp(
      ) {
 -        MaterialTheme(colorScheme = zenConverterColorScheme(context, accent, isDark, isOled)) {
 +        MaterialTheme(
@@ -667,17 +679,17 @@ index 49da19f..f9ff278 100644
 +            shapes = zenConverterShapes()
 +        ) {
              Surface(
-@@ -1867,3 +1876,3 @@ private fun Header(
+@@ -1867,3 +1884,3 @@ private fun Header(
                      .size(40.dp)
 -                    .clip(RoundedCornerShape(8.dp))
 +                    .clip(RoundedCornerShape(12.dp))
              )
-@@ -1877,3 +1886,3 @@ private fun Header(
+@@ -1877,3 +1894,3 @@ private fun Header(
                      style = MaterialTheme.typography.titleLarge,
 -                    fontWeight = FontWeight.SemiBold,
 +                    fontWeight = FontWeight.Medium,
                      color = MaterialTheme.colorScheme.onBackground,
-@@ -5820,2 +5829,346 @@ private fun AdvancedOptionsPanel(
+@@ -5820,2 +5837,346 @@ private fun AdvancedOptionsPanel(
  
 +private const val IMAGE_ADJUST_OFF = "Off"
 +private const val IMAGE_RESIZE_EXACT = "Exact size"
@@ -1024,7 +1036,7 @@ index 49da19f..f9ff278 100644
 +}
 +
  @Composable
-@@ -5833,3 +6186,7 @@ private fun ImageOptions(
+@@ -5833,3 +6194,7 @@ private fun ImageOptions(
      onPdfPageModeChange: (String) -> Unit,
 -    onSuperResolutionChange: (String) -> Unit
 +    onSuperResolutionChange: (String) -> Unit,
@@ -1033,7 +1045,7 @@ index 49da19f..f9ff278 100644
 +    editOptions: ImageEditOptions = ImageEditOptions(),
 +    onEditOptionsChange: (ImageEditOptions) -> Unit = {}
  ) {
-@@ -5921,3 +6278,28 @@ private fun ImageOptions(
+@@ -5921,3 +6286,28 @@ private fun ImageOptions(
              )
 +            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
 +                Text(
@@ -1062,11 +1074,11 @@ index 49da19f..f9ff278 100644
 +            onEditChange = onEditOptionsChange
 +        )
      }
-@@ -6107,2 +6489,3 @@ private fun QueueActions(
+@@ -6107,2 +6497,3 @@ private fun QueueActions(
          }
 +        val startShape = RoundedCornerShape(100.dp)
          Button(
-@@ -6110,3 +6493,12 @@ private fun QueueActions(
+@@ -6110,3 +6501,12 @@ private fun QueueActions(
              enabled = !isRunning,
 -            modifier = Modifier.weight(1f)
 +            shape = startShape,
@@ -1080,18 +1092,18 @@ index 49da19f..f9ff278 100644
 +                .weight(1f)
 +                .then(if (isRunning) Modifier else Modifier.background(SpectrumBrush, startShape))
          ) {
-@@ -6115,3 +6507,3 @@ private fun QueueActions(
+@@ -6115,3 +6515,3 @@ private fun QueueActions(
                  contentDescription = null,
 -                tint = MaterialTheme.colorScheme.onPrimary,
 +                tint = if (isRunning) MaterialTheme.colorScheme.onSurfaceVariant else SpectrumOnColor,
                  modifier = Modifier.size(18.dp)
-@@ -6380,3 +6772,4 @@ private fun QueuedFileOptionsPanel(
+@@ -6380,3 +6780,4 @@ private fun QueuedFileOptionsPanel(
          when (file.category) {
 -            FileCategory.Video -> VideoOptions(
 +            FileCategory.Video -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 +            VideoOptions(
                  texts = texts,
-@@ -6569,3 +6962,13 @@ private fun QueuedFileOptionsPanel(
+@@ -6569,3 +6970,13 @@ private fun QueuedFileOptionsPanel(
              )
 -            FileCategory.Audio -> AudioOptions(
 +            TargetSizeField(
@@ -1106,7 +1118,7 @@ index 49da19f..f9ff278 100644
 +            FileCategory.Audio -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 +            AudioOptions(
                  texts = texts,
-@@ -6645,3 +7048,12 @@ private fun QueuedFileOptionsPanel(
+@@ -6645,3 +7056,12 @@ private fun QueuedFileOptionsPanel(
              )
 -            FileCategory.Image -> {
 +            TargetSizeField(
@@ -1120,7 +1132,7 @@ index 49da19f..f9ff278 100644
 +            }
 +            FileCategory.Image -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                  ImageOptions(
-@@ -6657,3 +7069,11 @@ private fun QueuedFileOptionsPanel(
+@@ -6657,3 +7077,11 @@ private fun QueuedFileOptionsPanel(
                      onQualityChange = { value ->
 -                        onUpdateFile(file.copy(imageOptions = imageOptionsForQuality(value, selectedTarget.targetFormat)))
 +                        onUpdateFile(file.copy(imageOptions = imageOptionsForQuality(value, selectedTarget.targetFormat, file.imageOptions)))
@@ -1133,7 +1145,7 @@ index 49da19f..f9ff278 100644
 +                    onEditOptionsChange = { edit ->
 +                        onUpdateFile(file.copy(imageOptions = file.imageOptions.copy(edit = edit)))
                      },
-@@ -6692,2 +7112,10 @@ private fun QueuedFileOptionsPanel(
+@@ -6692,2 +7120,10 @@ private fun QueuedFileOptionsPanel(
                  }
 +                TargetSizeField(
 +                    valueBytes = file.imageOptions.targetSizeBytes,
@@ -1144,7 +1156,7 @@ index 49da19f..f9ff278 100644
 +                    }
 +                )
              }
-@@ -6754,2 +7182,92 @@ private fun GifImageOptions(
+@@ -6754,2 +7190,92 @@ private fun GifImageOptions(
  
 +private const val TARGET_SIZE_KB = "KB"
 +private const val TARGET_SIZE_MB = "MB"
@@ -1237,7 +1249,7 @@ index 49da19f..f9ff278 100644
 +}
 +
  @Composable
-@@ -7060,2 +7578,37 @@ internal fun FileCategory.icon(): ImageVector {
+@@ -7060,2 +7586,37 @@ internal fun FileCategory.icon(): ImageVector {
  
 +// Sarvam's identity is a continuous blue-to-orange spectrum. We keep colour still
 +// everywhere except the single primary action, where the spectrum carries motion.
@@ -1275,7 +1287,7 @@ index 49da19f..f9ff278 100644
 +)
 +
  private fun zenConverterColorScheme(
-@@ -7094,2 +7647,12 @@ private fun zenConverterColorScheme(
+@@ -7094,2 +7655,12 @@ private fun zenConverterColorScheme(
  
 +    // Anthropic's canvas is warm paper, never pure white, and its ink is a warm
 +    // near-black. Those two decisions carry most of the brand.
@@ -1288,7 +1300,7 @@ index 49da19f..f9ff278 100644
 +    val warmText = Color(0xFFF5F3EC)
 +
      return if (!isDark) {
-@@ -7098,14 +7661,25 @@ private fun zenConverterColorScheme(
+@@ -7098,14 +7669,25 @@ private fun zenConverterColorScheme(
              onPrimary = onPrimary,
 +            primaryContainer = ivoryMedium,
 +            onPrimaryContainer = ink,
@@ -1324,7 +1336,7 @@ index 49da19f..f9ff278 100644
 +            error = Color(0xFF9E3B2F),
 +            onError = Color(0xFFFFF8F5)
          )
-@@ -7115,14 +7689,25 @@ private fun zenConverterColorScheme(
+@@ -7115,14 +7697,25 @@ private fun zenConverterColorScheme(
              onPrimary = onPrimary,
 +            primaryContainer = Color(0xFF2A2A26),
 +            onPrimaryContainer = warmText,
@@ -1358,7 +1370,7 @@ index 49da19f..f9ff278 100644
 +            error = Color(0xFFD98A7C),
 +            onError = Color(0xFF2A0C06)
          )
-@@ -7132,14 +7717,25 @@ private fun zenConverterColorScheme(
+@@ -7132,14 +7725,25 @@ private fun zenConverterColorScheme(
              onPrimary = onPrimary,
 +            primaryContainer = Color(0xFF3A3A34),
 +            onPrimaryContainer = warmText,
@@ -1394,13 +1406,13 @@ index 49da19f..f9ff278 100644
 +            error = Color(0xFFE0907F),
 +            onError = Color(0xFF2A0C06)
          )
-@@ -7608,3 +8204,4 @@ private fun imageOptionsForQuality(
+@@ -7608,3 +8212,4 @@ private fun imageOptionsForQuality(
      value: String,
 -    targetFormat: TargetFormat
 +    targetFormat: TargetFormat,
 +    current: ImageExportOptions? = null
  ): ImageExportOptions {
-@@ -7613,3 +8210,5 @@ private fun imageOptionsForQuality(
+@@ -7613,3 +8218,5 @@ private fun imageOptionsForQuality(
          webpLossless = supportsWebpLosslessQuality(targetFormat) &&
 -            value == IMAGE_QUALITY_LOSSLESS
 +            value == IMAGE_QUALITY_LOSSLESS,
