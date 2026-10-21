@@ -1,0 +1,581 @@
+diff --git a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt b/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
+index 917e483..0804797 100644
+--- a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
++++ b/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
+@@ -1885,3 +1885,4 @@ class ConversionService : Service() {
+                         input.imageOptions.quality,
+-                        shouldUseWebpLossless(outputProfile, input.imageOptions)
++                        shouldUseWebpLossless(outputProfile, input.imageOptions),
++                        targetSizeBytes = input.imageOptions.targetSizeBytes
+                     )
+@@ -2226,8 +2227,10 @@ class ConversionService : Service() {
+             throwIfConversionCancelled()
+-            outputFile.outputStream().use { output ->
+-                if (!bitmapForOutput.compress(compressFormat, quality, output)) {
+-                    throw LocalizedFailure(localizedText(R.string.text_task_message_image_engine_could_not_write_this_output))
+-                }
+-                output.flush()
+-            }
++            writeCompressedImage(
++                bitmap = bitmapForOutput,
++                outputFile = outputFile,
++                compressFormat = compressFormat,
++                maxQuality = quality,
++                useWebpLossless = useWebpLossless,
++                targetSizeBytes = input.imageOptions.targetSizeBytes
++            )
+             throwIfConversionCancelled()
+@@ -2323,3 +2326,4 @@ class ConversionService : Service() {
+             requestedQuality = imageOptions.quality,
+-            useWebpLossless = shouldUseWebpLossless(outputProfile, imageOptions)
++            useWebpLossless = shouldUseWebpLossless(outputProfile, imageOptions),
++            targetSizeBytes = imageOptions.targetSizeBytes
+         )
+@@ -2332,3 +2336,4 @@ class ConversionService : Service() {
+         requestedQuality: Int,
+-        useWebpLossless: Boolean = false
++        useWebpLossless: Boolean = false,
++        targetSizeBytes: Long? = null
+     ) {
+@@ -2345,8 +2350,10 @@ class ConversionService : Service() {
+             throwIfConversionCancelled()
+-            outputFile.outputStream().use { output ->
+-                if (!bitmapForOutput.compress(compressFormat, quality, output)) {
+-                    throw LocalizedFailure(localizedText(R.string.text_task_message_image_engine_could_not_write_this_output))
+-                }
+-                output.flush()
+-            }
++            writeCompressedImage(
++                bitmap = bitmapForOutput,
++                outputFile = outputFile,
++                compressFormat = compressFormat,
++                maxQuality = quality,
++                useWebpLossless = useWebpLossless,
++                targetSizeBytes = targetSizeBytes
++            )
+             throwIfConversionCancelled()
+@@ -2359,2 +2366,78 @@ class ConversionService : Service() {
+ 
++    /**
++     * Writes [bitmap] to [outputFile], honouring an optional maximum output size.
++     * Lossy formats search for the highest quality that fits; lossless formats
++     * progressively downscale until the encoded result fits.
++     */
++    private fun writeCompressedImage(
++        bitmap: Bitmap,
++        outputFile: File,
++        compressFormat: Bitmap.CompressFormat,
++        maxQuality: Int,
++        useWebpLossless: Boolean,
++        targetSizeBytes: Long?
++    ) {
++        val isLossless = compressFormat == Bitmap.CompressFormat.PNG || useWebpLossless
++        if (targetSizeBytes == null || targetSizeBytes <= 0L) {
++            writeImageBytes(outputFile, compressBitmapToBytes(bitmap, compressFormat, maxQuality))
++            return
++        }
++        if (!isLossless) {
++            val cappedQuality = maxQuality.coerceIn(1, 100)
++            val bestEffort = compressBitmapToBytes(bitmap, compressFormat, cappedQuality)
++            if (bestEffort.size.toLong() <= targetSizeBytes) {
++                writeImageBytes(outputFile, bestEffort)
++                return
++            }
++            var low = 1
++            var high = cappedQuality - 1
++            var chosen: ByteArray? = null
++            while (low <= high) {
++                val mid = (low + high) / 2
++                val candidate = compressBitmapToBytes(bitmap, compressFormat, mid)
++                if (candidate.size.toLong() <= targetSizeBytes) {
++                    chosen = candidate
++                    low = mid + 1
++                } else {
++                    high = mid - 1
++                }
++            }
++            writeImageBytes(outputFile, chosen ?: compressBitmapToBytes(bitmap, compressFormat, 1))
++            return
++        }
++        var scale = 1.0
++        var bytes = compressBitmapToBytes(bitmap, compressFormat, 100)
++        var attempts = 0
++        while (bytes.size.toLong() > targetSizeBytes && scale > 0.2 && attempts < 12) {
++            scale *= 0.85
++            val scaledWidth = (bitmap.width * scale).toInt().coerceAtLeast(1)
++            val scaledHeight = (bitmap.height * scale).toInt().coerceAtLeast(1)
++            val scaled = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
++            bytes = compressBitmapToBytes(scaled, compressFormat, 100)
++            scaled.recycle()
++            attempts += 1
++        }
++        writeImageBytes(outputFile, bytes)
++    }
++
++    private fun compressBitmapToBytes(
++        bitmap: Bitmap,
++        compressFormat: Bitmap.CompressFormat,
++        quality: Int
++    ): ByteArray {
++        return ByteArrayOutputStream().use { output ->
++            if (!bitmap.compress(compressFormat, quality.coerceIn(1, 100), output)) {
++                throw LocalizedFailure(localizedText(R.string.text_task_message_image_engine_could_not_write_this_output))
++            }
++            output.toByteArray()
++        }
++    }
++
++    private fun writeImageBytes(outputFile: File, bytes: ByteArray) {
++        outputFile.outputStream().use { output ->
++            output.write(bytes)
++            output.flush()
++        }
++    }
++
+     private fun writeIcoImageFile(
+@@ -4209,3 +4292,3 @@ class ConversionService : Service() {
+                 }
+-                input.videoOptions.videoBitrate?.let { bitrate ->
++                effectiveVideoBitrate(input.videoOptions, totalDurationMs, includeAudio, videoAudioOptions)?.let { bitrate ->
+                     add("-b:v")
+@@ -4882,3 +4965,3 @@ class ConversionService : Service() {
+             }
+-            input.videoOptions.videoBitrate?.let { bitrate ->
++            effectiveVideoBitrate(input.videoOptions, durationMs, includeAudio, videoAudioOptions)?.let { bitrate ->
+                 add("-b:v")
+@@ -4933,2 +5016,22 @@ class ConversionService : Service() {
+ 
++    private fun effectiveVideoBitrate(
++        videoOptions: VideoExportOptions,
++        durationMs: Long?,
++        includeAudio: Boolean,
++        videoAudioOptions: AudioExportOptions
++    ): Int? {
++        val target = targetBitrateForSize(videoOptions.targetSizeBytes, durationMs)
++        if (target != null) {
++            val audioBits = if (includeAudio) {
++                targetBitrateForSize(videoAudioOptions.targetSizeBytes, durationMs)
++                    ?: videoAudioOptions.audioBitrate
++                    ?: DEFAULT_TARGET_AUDIO_BITRATE_BPS
++            } else {
++                0
++            }
++            return (target - audioBits).coerceAtLeast(MIN_TARGET_VIDEO_BITRATE_BPS)
++        }
++        return videoOptions.videoBitrate
++    }
++
+     private fun ffmpegVideoAudioOptionsFor(
+@@ -4963,3 +5066,5 @@ class ConversionService : Service() {
+             } else {
+-                audioOptions.audioBitrate?.let { bitrate ->
++                val targetAudioBitrate = targetBitrateForSize(audioOptions.targetSizeBytes, durationMs)
++                    ?.coerceAtLeast(MIN_TARGET_AUDIO_BITRATE_BPS)
++                (targetAudioBitrate ?: audioOptions.audioBitrate)?.let { bitrate ->
+                     add("-b:a")
+diff --git a/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt b/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
+index bd42038..41e94b6 100644
+--- a/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
++++ b/app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
+@@ -130,3 +130,4 @@ data class VideoExportOptions(
+     val trimRange: MediaTrimRange = MediaTrimRange(),
+-    val advanced: VideoAdvancedOptions = VideoAdvancedOptions()
++    val advanced: VideoAdvancedOptions = VideoAdvancedOptions(),
++    val targetSizeBytes: Long? = null
+ ) {
+@@ -160,3 +161,4 @@ data class AudioExportOptions(
+     val trimRange: MediaTrimRange = MediaTrimRange(),
+-    val advanced: AudioAdvancedOptions = AudioAdvancedOptions()
++    val advanced: AudioAdvancedOptions = AudioAdvancedOptions(),
++    val targetSizeBytes: Long? = null
+ )
+@@ -170,2 +172,18 @@ const val DEFAULT_MP3_VBR_QUALITY = 2
+ 
++const val MIN_TARGET_VIDEO_BITRATE_BPS = 100_000
++const val MIN_TARGET_AUDIO_BITRATE_BPS = 16_000
++const val DEFAULT_TARGET_AUDIO_BITRATE_BPS = 128_000
++
++/**
++ * Derives the bitrate needed to keep an output at or below [targetSizeBytes] for the
++ * given duration. Returns null when no target is set or the duration is unknown.
++ */
++fun targetBitrateForSize(targetSizeBytes: Long?, durationMs: Long?): Int? {
++    if (targetSizeBytes == null || targetSizeBytes <= 0L) return null
++    val duration = durationMs?.takeIf { it > 0L } ?: return null
++    val bitsPerSecond = (targetSizeBytes.toDouble() * 8.0) / (duration.toDouble() / 1000.0)
++    if (!bitsPerSecond.isFinite() || bitsPerSecond <= 0.0) return null
++    return bitsPerSecond.toLong().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
++}
++
+ data class MediaTrimRange(
+@@ -284,3 +302,4 @@ data class ImageExportOptions(
+     val webpLossless: Boolean = false,
+-    val superResolution: ImageSuperResolutionMode = ImageSuperResolutionMode.Off
++    val superResolution: ImageSuperResolutionMode = ImageSuperResolutionMode.Off,
++    val targetSizeBytes: Long? = null
+ )
+diff --git a/app/src/main/java/org/zenconverter/app/ui/UiText.kt b/app/src/main/java/org/zenconverter/app/ui/UiText.kt
+index 23f94f9..a8d50db 100644
+--- a/app/src/main/java/org/zenconverter/app/ui/UiText.kt
++++ b/app/src/main/java/org/zenconverter/app/ui/UiText.kt
+@@ -535,2 +535,9 @@ internal class UiText(private val context: Context) {
+ 
++    val targetSize: String
++        get() = text(R.string.ui_target_size)
++
++    fun targetSizeHint(): String {
++        return text(R.string.ui_target_size_hint)
++    }
++
+     val pageSize: String
+diff --git a/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt b/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
+index 49da19f..03a1768 100644
+--- a/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
++++ b/app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
+@@ -126,2 +126,3 @@ import androidx.compose.material3.RangeSliderState
+ import androidx.compose.material3.Scaffold
++import androidx.compose.material3.Slider
+ import androidx.compose.material3.SliderColors
+@@ -5833,3 +5834,5 @@ private fun ImageOptions(
+     onPdfPageModeChange: (String) -> Unit,
+-    onSuperResolutionChange: (String) -> Unit
++    onSuperResolutionChange: (String) -> Unit,
++    qualityPercent: Int = 85,
++    onQualityPercentChange: (Int) -> Unit = {}
+ ) {
+@@ -5921,2 +5924,18 @@ private fun ImageOptions(
+             )
++            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
++                Text(
++                    text = stringResource(R.string.display_option_dropdown_1_s_2_s, texts.quality, "$qualityPercent%"),
++                    style = MaterialTheme.typography.bodySmall,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant
++                )
++                Slider(
++                    value = qualityPercent.coerceIn(1, 100).toFloat(),
++                    onValueChange = { percent ->
++                        onQualityPercentChange(Math.round(percent).toInt().coerceIn(1, 100))
++                    },
++                    valueRange = 1f..100f,
++                    steps = 98,
++                    modifier = Modifier.fillMaxWidth()
++                )
++            }
+         }
+@@ -6380,3 +6399,4 @@ private fun QueuedFileOptionsPanel(
+         when (file.category) {
+-            FileCategory.Video -> VideoOptions(
++            FileCategory.Video -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
++            VideoOptions(
+                 texts = texts,
+@@ -6569,3 +6589,13 @@ private fun QueuedFileOptionsPanel(
+             )
+-            FileCategory.Audio -> AudioOptions(
++            TargetSizeField(
++                valueBytes = file.videoOptions.targetSizeBytes,
++                label = texts.targetSize,
++                hint = texts.targetSizeHint(),
++                onValueChange = { bytes ->
++                    onUpdateFile(file.copy(videoOptions = file.videoOptions.copy(targetSizeBytes = bytes)))
++                }
++            )
++            }
++            FileCategory.Audio -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
++            AudioOptions(
+                 texts = texts,
+@@ -6645,2 +6675,11 @@ private fun QueuedFileOptionsPanel(
+             )
++            TargetSizeField(
++                valueBytes = file.audioOptions.targetSizeBytes,
++                label = texts.targetSize,
++                hint = texts.targetSizeHint(),
++                onValueChange = { bytes ->
++                    onUpdateFile(file.copy(audioOptions = file.audioOptions.copy(targetSizeBytes = bytes)))
++                }
++            )
++            }
+             FileCategory.Image -> {
+@@ -6657,3 +6696,7 @@ private fun QueuedFileOptionsPanel(
+                     onQualityChange = { value ->
+-                        onUpdateFile(file.copy(imageOptions = imageOptionsForQuality(value, selectedTarget.targetFormat)))
++                        onUpdateFile(file.copy(imageOptions = imageOptionsForQuality(value, selectedTarget.targetFormat, file.imageOptions)))
++                    },
++                    qualityPercent = file.imageOptions.quality,
++                    onQualityPercentChange = { percent ->
++                        onUpdateFile(file.copy(imageOptions = file.imageOptions.copy(quality = percent)))
+                     },
+@@ -6692,2 +6735,10 @@ private fun QueuedFileOptionsPanel(
+                 }
++                TargetSizeField(
++                    valueBytes = file.imageOptions.targetSizeBytes,
++                    label = texts.targetSize,
++                    hint = texts.targetSizeHint(),
++                    onValueChange = { bytes ->
++                        onUpdateFile(file.copy(imageOptions = file.imageOptions.copy(targetSizeBytes = bytes)))
++                    }
++                )
+             }
+@@ -6754,2 +6805,92 @@ private fun GifImageOptions(
+ 
++private const val TARGET_SIZE_KB = "KB"
++private const val TARGET_SIZE_MB = "MB"
++private const val TARGET_SIZE_BYTES_PER_KB = 1024L
++private const val TARGET_SIZE_BYTES_PER_MB = 1024L * 1024L
++
++private fun targetSizeTextFor(bytes: Long?): String {
++    if (bytes == null || bytes <= 0L) return ""
++    return if (bytes >= TARGET_SIZE_BYTES_PER_MB) {
++        val megabytes = bytes.toDouble() / TARGET_SIZE_BYTES_PER_MB.toDouble()
++        "${formatTargetSizeNumber(megabytes)} $TARGET_SIZE_MB"
++    } else {
++        val kilobytes = bytes.toDouble() / TARGET_SIZE_BYTES_PER_KB.toDouble()
++        "${formatTargetSizeNumber(kilobytes)} $TARGET_SIZE_KB"
++    }
++}
++
++private fun formatTargetSizeNumber(value: Double): String {
++    if (value == value.toLong().toDouble()) return value.toLong().toString()
++    return java.math.BigDecimal(value)
++        .setScale(2, java.math.RoundingMode.HALF_UP)
++        .stripTrailingZeros()
++        .toPlainString()
++}
++
++private fun parseTargetSizeInput(raw: String): Long? {
++    val trimmed = raw.trim()
++    if (trimmed.isEmpty()) return null
++    val lower = trimmed.lowercase(Locale.US)
++    val multiplier = when {
++        lower.endsWith("mb") -> TARGET_SIZE_BYTES_PER_MB
++        lower.endsWith("kb") -> TARGET_SIZE_BYTES_PER_KB
++        else -> TARGET_SIZE_BYTES_PER_KB
++    }
++    val numberText = lower.removeSuffix("mb").removeSuffix("kb").trim()
++    val number = numberText.toDoubleOrNull() ?: return null
++    if (number <= 0.0) return null
++    return (number * multiplier.toDouble()).toLong().takeIf { it > 0L }
++}
++
++@Composable
++private fun TargetSizeField(
++    valueBytes: Long?,
++    label: String,
++    hint: String,
++    onValueChange: (Long?) -> Unit,
++    modifier: Modifier = Modifier
++) {
++    var text by remember { mutableStateOf(targetSizeTextFor(valueBytes)) }
++    var focused by remember { mutableStateOf(false) }
++    LaunchedEffect(valueBytes) {
++        if (!focused) text = targetSizeTextFor(valueBytes)
++    }
++    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
++        OutlinedTextField(
++            value = text,
++            onValueChange = { rawValue ->
++                val cleaned = rawValue.take(16)
++                text = cleaned
++                onValueChange(if (cleaned.isBlank()) null else parseTargetSizeInput(cleaned))
++            },
++            singleLine = true,
++            label = { Text(label) },
++            placeholder = { Text("0") },
++            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
++            colors = OutlinedTextFieldDefaults.colors(
++                focusedBorderColor = MaterialTheme.colorScheme.primary,
++                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
++                focusedLabelColor = MaterialTheme.colorScheme.primary,
++                unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
++                cursorColor = MaterialTheme.colorScheme.primary,
++                focusedContainerColor = MaterialTheme.colorScheme.surface,
++                unfocusedContainerColor = MaterialTheme.colorScheme.surface
++            ),
++            modifier = modifier
++                .fillMaxWidth()
++                .onFocusChanged { focusState ->
++                    if (focused && !focusState.isFocused) text = targetSizeTextFor(valueBytes)
++                    focused = focusState.isFocused
++                }
++        )
++        Text(
++            text = hint,
++            style = MaterialTheme.typography.bodySmall,
++            color = MaterialTheme.colorScheme.onSurfaceVariant,
++            maxLines = 2,
++            overflow = TextOverflow.Ellipsis
++        )
++    }
++}
++
+ @Composable
+@@ -7608,3 +7749,4 @@ private fun imageOptionsForQuality(
+     value: String,
+-    targetFormat: TargetFormat
++    targetFormat: TargetFormat,
++    current: ImageExportOptions? = null
+ ): ImageExportOptions {
+@@ -7613,3 +7755,5 @@ private fun imageOptionsForQuality(
+         webpLossless = supportsWebpLosslessQuality(targetFormat) &&
+-            value == IMAGE_QUALITY_LOSSLESS
++            value == IMAGE_QUALITY_LOSSLESS,
++        superResolution = current?.superResolution ?: ImageSuperResolutionMode.Off,
++        targetSizeBytes = current?.targetSizeBytes
+     )
+diff --git a/app/src/main/res/values-b+zh+Hans/strings.xml b/app/src/main/res/values-b+zh+Hans/strings.xml
+index 5345de4..7ea60bb 100644
+--- a/app/src/main/res/values-b+zh+Hans/strings.xml
++++ b/app/src/main/res/values-b+zh+Hans/strings.xml
+@@ -69,3 +69,3 @@
+     <string name="help_subtitle_title">字幕与歌词</string>
+-    <string name="help_title">ZenConverter 能做什么</string>
++    <string name="help_title">Roopantar 能做什么</string>
+     <string name="help_video_body">转换常见视频格式，支持 AI 2× 深度学习视频插帧（实验性）、多视频拼接合并、时间轴裁剪与多段分割，也可提取音频。</string>
+@@ -160,3 +160,3 @@
+     <string name="privacy_for_privacy_questions_use_the_current_contact_method_listed_on_the_project_or_distribution_page_do_not_attach_files_passwords_or_sensitive_metadata_to_a">如有隐私问题，请使用项目页或应用分发页列出的当前联系方式。不要在公开反馈中附上文件、密码或敏感元数据。</string>
+-    <string name="privacy_intro_zenconverter_processes_files_on_your_device_files">ZenConverter 在设备上处理文件。你选择的文件、文件内容和 PDF 密码不会上传到开发者控制的服务器。应用没有账号、广告、使用行为分析或崩溃上报。</string>
++    <string name="privacy_intro_zenconverter_processes_files_on_your_device_files">Roopantar 在设备上处理文件。你选择的文件、文件内容和 PDF 密码不会上传到开发者控制的服务器。应用没有账号、广告、使用行为分析或崩溃上报。</string>
+     <string name="privacy_language_accent_color_whether_a_custom_output_location_is_used_and_the_selected_folder_s_uri_and_display_name_are_stored_in_private_app_settings_you_man">语言、主题色、是否使用自定义输出位置，以及所选文件夹的 URI 和显示名称，会保存在应用私有设置中。源文件和转换结果由你在文件系统中管理；清除应用数据不会删除共享目录里的文件。</string>
+@@ -377,3 +377,3 @@
+     <string name="text_rotation_label">旋转</string>
+-    <string name="text_running_keep_awake_message">%1$s · 已保持屏幕常亮，请让 ZenConverter 留在前台</string>
++    <string name="text_running_keep_awake_message">%1$s · 已保持屏幕常亮，请让 Roopantar 留在前台</string>
+     <string name="text_super_resolution_summary">双线性放大 · 原图质量</string>
+@@ -487,3 +487,3 @@
+     <string name="ui_app_download">App 内下载</string>
+-    <string name="ui_app_logo">ZenConverter 标志</string>
++    <string name="ui_app_logo">Roopantar 标志</string>
+     <string name="ui_app_version">版本</string>
+@@ -521,3 +521,3 @@
+     <string name="ui_default_output_location">默认文件夹</string>
+-    <string name="ui_default_output_note">系统文件夹 / ZenConverter</string>
++    <string name="ui_default_output_note">系统文件夹 / Roopantar</string>
+     <string name="ui_download_cancelled">下载已取消</string>
+@@ -602,5 +602,5 @@
+     <string name="ui_skip">跳过</string>
+-    <string name="ui_sponsor_intro">赞助以支持 ZenConverter 始终保持维护，坚持开源免费无广告</string>
++    <string name="ui_sponsor_intro">赞助以支持 Roopantar 始终保持维护，坚持开源免费无广告</string>
+     <string name="ui_sponsor_no_benefits">赞助不会带来任何额外服务或功能。</string>
+-    <string name="ui_sponsor_title">赞助 ZenConverter</string>
++    <string name="ui_sponsor_title">赞助 Roopantar</string>
+     <string name="ui_stable_update_channel">正式版</string>
+diff --git a/app/src/main/res/values-b+zh+Hant/strings.xml b/app/src/main/res/values-b+zh+Hant/strings.xml
+index 718026e..f7cf677 100644
+--- a/app/src/main/res/values-b+zh+Hant/strings.xml
++++ b/app/src/main/res/values-b+zh+Hant/strings.xml
+@@ -69,3 +69,3 @@
+     <string name="help_subtitle_title">字幕與歌詞</string>
+-    <string name="help_title">ZenConverter 可以做什麼</string>
++    <string name="help_title">Roopantar 可以做什麼</string>
+     <string name="help_video_body">轉換常見影片格式，支援 AI 2× 深度學習影片補幀（實驗性）、多影片拼接合併、時間軸裁剪與多段分割，也可擷取音訊。</string>
+@@ -160,3 +160,3 @@
+     <string name="privacy_for_privacy_questions_use_the_current_contact_method_listed_on_the_project_or_distribution_page_do_not_attach_files_passwords_or_sensitive_metadata_to_a">如有隱私問題，請使用專案頁面或應用程式發行頁面列出的目前聯絡方式。請勿在公開回報中附上檔案、密碼或敏感中繼資料。</string>
+-    <string name="privacy_intro_zenconverter_processes_files_on_your_device_files">ZenConverter 在裝置上處理檔案。你選取的檔案、檔案內容和 PDF 密碼不會傳送到開發者控制的伺服器。應用程式沒有帳戶、廣告、使用行為分析或當機回報。</string>
++    <string name="privacy_intro_zenconverter_processes_files_on_your_device_files">Roopantar 在裝置上處理檔案。你選取的檔案、檔案內容和 PDF 密碼不會傳送到開發者控制的伺服器。應用程式沒有帳戶、廣告、使用行為分析或當機回報。</string>
+     <string name="privacy_language_accent_color_whether_a_custom_output_location_is_used_and_the_selected_folder_s_uri_and_display_name_are_stored_in_private_app_settings_you_man">語言、主題色、是否使用自訂輸出位置，以及所選資料夾的 URI 和顯示名稱，會存放在應用程式私有設定中。來源檔案和轉換結果由你在檔案系統中管理；清除應用程式資料不會刪除共享目錄內的檔案。</string>
+@@ -377,3 +377,3 @@
+     <string name="text_rotation_label">旋轉</string>
+-    <string name="text_running_keep_awake_message">%1$s · 已保持螢幕常亮，請讓 ZenConverter 留在前台</string>
++    <string name="text_running_keep_awake_message">%1$s · 已保持螢幕常亮，請讓 Roopantar 留在前台</string>
+     <string name="text_super_resolution_summary">雙線性放大 · 原圖品質</string>
+@@ -487,3 +487,3 @@
+     <string name="ui_app_download">App 內下載</string>
+-    <string name="ui_app_logo">ZenConverter 標誌</string>
++    <string name="ui_app_logo">Roopantar 標誌</string>
+     <string name="ui_app_version">版本</string>
+@@ -521,3 +521,3 @@
+     <string name="ui_default_output_location">預設資料夾</string>
+-    <string name="ui_default_output_note">系統資料夾 / ZenConverter</string>
++    <string name="ui_default_output_note">系統資料夾 / Roopantar</string>
+     <string name="ui_download_cancelled">下載已取消</string>
+@@ -602,5 +602,5 @@
+     <string name="ui_skip">略過</string>
+-    <string name="ui_sponsor_intro">贊助以支持 ZenConverter 始終保持維護，堅持開源免費無廣告</string>
++    <string name="ui_sponsor_intro">贊助以支持 Roopantar 始終保持維護，堅持開源免費無廣告</string>
+     <string name="ui_sponsor_no_benefits">贊助不會帶來任何額外服務或功能。</string>
+-    <string name="ui_sponsor_title">贊助 ZenConverter</string>
++    <string name="ui_sponsor_title">贊助 Roopantar</string>
+     <string name="ui_stable_update_channel">正式版</string>
+diff --git a/app/src/main/res/values-fr/strings.xml b/app/src/main/res/values-fr/strings.xml
+index bc37648..a7b37ee 100644
+--- a/app/src/main/res/values-fr/strings.xml
++++ b/app/src/main/res/values-fr/strings.xml
+@@ -77,3 +77,3 @@
+     <string name="help_subtitle_title">Sous-titres et paroles</string>
+-    <string name="help_title">Ce que ZenConverter peut faire</string>
++    <string name="help_title">Ce que Roopantar peut faire</string>
+     <string name="help_video_body">Convertir les formats vidéo courants, utiliser l\'interpolation de fréquence d\'images 2× par IA (fonctionnalité expérimentale), fusionner plusieurs vidéos, découper et scinder des segments, ou extraire des pistes audio.</string>
+@@ -169,3 +169,3 @@
+     <string name="privacy_for_privacy_questions_use_the_current_contact_method_listed_on_the_project_or_distribution_page_do_not_attach_files_passwords_or_sensitive_metadata_to_a">Pour toute question relative à la confidentialité, veuillez utiliser les coordonnées indiquées sur la page du projet ou de la distribution. Ne joignez pas de fichiers, de mots de passe ou de métadonnées sensibles à un rapport public.</string>
+-    <string name="privacy_intro_zenconverter_processes_files_on_your_device_files">ZenConverter traite les fichiers directement sur votre appareil. Les fichiers que vous sélectionnez, leur contenu et les mots de passe des fichiers PDF ne sont pas transférés vers des serveurs contrôlés par le développeur. L\'application ne comporte ni système de compte, ni publicités, ni analyse d\'utilisation, ni rapport d\'erreurs.</string>
++    <string name="privacy_intro_zenconverter_processes_files_on_your_device_files">Roopantar traite les fichiers directement sur votre appareil. Les fichiers que vous sélectionnez, leur contenu et les mots de passe des fichiers PDF ne sont pas transférés vers des serveurs contrôlés par le développeur. L\'application ne comporte ni système de compte, ni publicités, ni analyse d\'utilisation, ni rapport d\'erreurs.</string>
+     <string name="privacy_language_accent_color_whether_a_custom_output_location_is_used_and_the_selected_folder_s_uri_and_display_name_are_stored_in_private_app_settings_you_man">La langue, la couleur d\'accent, l\'utilisation ou non d\'un emplacement de sortie personnalisé, ainsi que l\'URI et le nom d\'affichage du dossier sélectionné sont enregistrés dans les paramètres privés de l\'application. Vous gérez les fichiers source et les fichiers convertis dans le système de fichiers ; la suppression des données de l\'application n\'entraîne pas la suppression des fichiers présents dans les dossiers partagés.</string>
+@@ -386,3 +386,3 @@
+     <string name="text_rotation_label">Rotation</string>
+-    <string name="text_running_keep_awake_message">%1$s · Garder ZenConverter au premier plan tout en laissant l\'écran allumé</string>
++    <string name="text_running_keep_awake_message">%1$s · Garder Roopantar au premier plan tout en laissant l\'écran allumé</string>
+     <string name="text_super_resolution_summary">Agrandissement bilinéaire · Qualité d\'origine</string>
+@@ -496,3 +496,3 @@
+     <string name="ui_app_download">Télécharger depuis l\'application</string>
+-    <string name="ui_app_logo">Logo de ZenConverter</string>
++    <string name="ui_app_logo">Logo de Roopantar</string>
+     <string name="ui_app_version">Version</string>
+@@ -530,3 +530,3 @@
+     <string name="ui_default_output_location">Dossier par défaut</string>
+-    <string name="ui_default_output_note">Dossiers système / ZenConverter</string>
++    <string name="ui_default_output_note">Dossiers système / Roopantar</string>
+     <string name="ui_download_cancelled">Téléchargement annulé</string>
+@@ -611,5 +611,5 @@
+     <string name="ui_skip">Ignorer</string>
+-    <string name="ui_sponsor_intro">Soutenez ZenConverter pour aider le projet à rester maintenu, open source, gratuit et sans publicité.</string>
++    <string name="ui_sponsor_intro">Soutenez Roopantar pour aider le projet à rester maintenu, open source, gratuit et sans publicité.</string>
+     <string name="ui_sponsor_no_benefits">Soutenir ne donne accès à aucun service ni fonctionnalité supplémentaire.</string>
+-    <string name="ui_sponsor_title">Soutenir ZenConverter</string>
++    <string name="ui_sponsor_title">Soutenir Roopantar</string>
+     <string name="ui_stable_update_channel">Stable</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 34158ab..3ff8890 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,3 +1,3 @@
+ <resources>
+-    <string name="app_name" translatable="false">ZenConverter</string>
++    <string name="app_name" translatable="false">Roopantar</string>
+     <string name="a11y_add_split_point">Add split point</string>
+@@ -82,3 +82,3 @@
+     <string name="help_subtitle_title">Subtitles and Lyrics</string>
+-    <string name="help_title">What ZenConverter can do</string>
++    <string name="help_title">What Roopantar can do</string>
+     <string name="help_video_body">Convert common video formats, AI 2× frame rate interpolation (Experimental), merge multiple videos, trim &amp; split segments, or extract audio tracks.</string>
+@@ -174,3 +174,3 @@
+     <string name="privacy_for_privacy_questions_use_the_current_contact_method_listed_on_the_project_or_distribution_page_do_not_attach_files_passwords_or_sensitive_metadata_to_a">For privacy questions, use the current contact method listed on the project or distribution page. Do not attach files, passwords, or sensitive metadata to a public report.</string>
+-    <string name="privacy_intro_zenconverter_processes_files_on_your_device_files">ZenConverter processes files on your device. Files you select, their contents, and PDF passwords are not uploaded to servers controlled by the developer. The app has no account system, ads, usage analytics, or crash reporting.</string>
++    <string name="privacy_intro_zenconverter_processes_files_on_your_device_files">Roopantar processes files on your device. Files you select, their contents, and PDF passwords are not uploaded to servers controlled by the developer. The app has no account system, ads, usage analytics, or crash reporting.</string>
+     <string name="privacy_language_accent_color_whether_a_custom_output_location_is_used_and_the_selected_folder_s_uri_and_display_name_are_stored_in_private_app_settings_you_man">Language, accent color, whether a custom output location is used, and the selected folder\'s URI and display name are stored in private app settings. You manage source files and converted results in the file system; clearing app data does not remove files in shared folders.</string>
+@@ -391,3 +391,3 @@
+     <string name="text_rotation_label">Rotate</string>
+-    <string name="text_running_keep_awake_message">%1$s · Keeping the screen on; keep ZenConverter in the foreground</string>
++    <string name="text_running_keep_awake_message">%1$s · Keeping the screen on; keep Roopantar in the foreground</string>
+     <string name="text_super_resolution_summary">Bilinear upscale · Original quality</string>
+@@ -502,3 +502,3 @@
+     <string name="ui_app_license" translatable="false">AGPL-3.0-or-later</string>
+-    <string name="ui_app_logo">ZenConverter logo</string>
++    <string name="ui_app_logo">Roopantar logo</string>
+     <string name="ui_app_version">Version</string>
+@@ -536,3 +536,3 @@
+     <string name="ui_default_output_location">Default folder</string>
+-    <string name="ui_default_output_note">System folders / ZenConverter</string>
++    <string name="ui_default_output_note">System folders / Roopantar</string>
+     <string name="ui_download_cancelled">Download cancelled</string>
+@@ -606,2 +606,4 @@
+     <string name="ui_quality">Quality</string>
++    <string name="ui_target_size">Target size</string>
++    <string name="ui_target_size_hint">Compress the output to at most this size. Type a number with KB or MB, for example 500 KB or 2 MB. Leave empty for no limit.</string>
+     <string name="ui_queue">Conversion tasks</string>
+@@ -617,5 +619,5 @@
+     <string name="ui_skip">Skip</string>
+-    <string name="ui_sponsor_intro">Sponsor to help ZenConverter stay maintained, open-source, free, and ad-free.</string>
++    <string name="ui_sponsor_intro">Sponsor to help Roopantar stay maintained, open-source, free, and ad-free.</string>
+     <string name="ui_sponsor_no_benefits">Sponsorship does not unlock any additional services or features.</string>
+-    <string name="ui_sponsor_title">Sponsor ZenConverter</string>
++    <string name="ui_sponsor_title">Sponsor Roopantar</string>
+     <string name="ui_stable_update_channel">Stable</string>

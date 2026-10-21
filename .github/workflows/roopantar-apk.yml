@@ -1,0 +1,103 @@
+name: Roopantar APK
+
+# Builds a signed, installable Roopantar APK on GitHub's runners, where there is
+# no per-command time limit. Triggered manually from the Actions tab or the API.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build signed arm64 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools platforms;android-36 build-tools;36.0.0
+
+      - name: Apply Roopantar changes
+        run: |
+          set -euo pipefail
+          git apply --verbose roopantar.patch
+          grep -n 'name="app_name"' app/src/main/res/values/strings.xml
+          grep -c 'targetSizeBytes' app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
+
+      - name: Generate Roopantar icon
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check pillow
+          python3 tools/roopantar_icon.py
+
+      - name: Generate signing keystore
+        run: |
+          set -euo pipefail
+          keytool -genkeypair -v \
+            -keystore roopantar-ci.jks \
+            -alias roopantar \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass roopantarci -keypass roopantarci \
+            -dname "CN=Roopantar, OU=CI, O=Roopantar, C=IN"
+
+      - name: Configure local.properties
+        run: |
+          set -euo pipefail
+          {
+            echo "sdk.dir=${ANDROID_SDK_ROOT}"
+            echo "ZENCONVERTER_VERSION_NAME=1.1.0"
+            echo "ZENCONVERTER_VERSION_CODE=1001000"
+            echo "RELEASE_STORE_FILE=roopantar-ci.jks"
+            echo "RELEASE_STORE_PASSWORD=roopantarci"
+            echo "RELEASE_KEY_ALIAS=roopantar"
+            echo "RELEASE_KEY_PASSWORD=roopantarci"
+          } > local.properties
+          cat local.properties
+
+      - name: Allow Gradle wrapper execution
+        run: chmod +x ./gradlew
+
+      - name: Build release APK
+        run: ./gradlew --no-daemon --stacktrace clean assembleRelease
+
+      - name: Collect APK
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          apk="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)"
+          test -n "${apk}"
+          cp "${apk}" dist/Roopantar-1.1.0-arm64-v8a.apk
+          sha256sum dist/Roopantar-1.1.0-arm64-v8a.apk
+          ls -lh dist
+
+      - name: Publish APK to a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view roopantar-ci >/dev/null 2>&1 || \
+            gh release create roopantar-ci \
+              --title "Roopantar CI build" \
+              --notes "Automated build of Roopantar with target-size and quality controls."
+          gh release upload roopantar-ci dist/Roopantar-1.1.0-arm64-v8a.apk --clobber
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: roopantar-apk
+          path: dist/Roopantar-1.1.0-arm64-v8a.apk
+          if-no-files-found: error
+          retention-days: 14
