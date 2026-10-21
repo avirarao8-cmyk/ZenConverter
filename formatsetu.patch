@@ -1,3 +1,14 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 9b2da32..0ebd3cd 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -181,2 +181,6 @@ dependencies {
+     implementation(files(ffmpegKitLocalAar))
++    // yt-dlp + a bundled Python runtime, so pasted links can be downloaded on device.
++    // The ffmpeg module lets yt-dlp merge separate video/audio streams and extract audio.
++    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
++    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
+     if (smartExceptionCommonLocalJar.isFile && smartExceptionJavaLocalJar.isFile) {
 diff --git a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt b/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
 index 917e483..a2c22f3 100644
 --- a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
@@ -947,6 +958,151 @@ index 025ef5a..04ee105 100644
 +    PdfWatermark("pdf_watermark"),
 +    PdfCrop("pdf_crop"),
      Woff2("WOFF2"),
+diff --git a/app/src/main/java/org/zenconverter/app/download/LinkDownloader.kt b/app/src/main/java/org/zenconverter/app/download/LinkDownloader.kt
+new file mode 100644
+index 0000000..4a561c8
+--- /dev/null
++++ b/app/src/main/java/org/zenconverter/app/download/LinkDownloader.kt
+@@ -0,0 +1,139 @@
++package org.zenconverter.app.download
++
++import android.content.Context
++import com.yausername.youtubedl_android.DownloadProgressCallback
++import com.yausername.youtubedl_android.YoutubeDL
++import com.yausername.youtubedl_android.YoutubeDLRequest
++import java.io.File
++import java.util.concurrent.atomic.AtomicBoolean
++
++/** What the user asked a pasted link to produce. */
++enum class LinkQuality(
++    val label: String,
++    val formatSelector: String,
++    val audioFormat: String?
++) {
++    VideoBest(
++        label = "Video · best",
++        formatSelector = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
++        audioFormat = null
++    ),
++    Video1080(
++        label = "Video · 1080p",
++        formatSelector = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]/best",
++        audioFormat = null
++    ),
++    Video720(
++        label = "Video · 720p",
++        formatSelector = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best",
++        audioFormat = null
++    ),
++    Video480(
++        label = "Video · 480p",
++        formatSelector = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]/best",
++        audioFormat = null
++    ),
++    AudioMp3(
++        label = "Music · MP3",
++        formatSelector = "bestaudio/best",
++        audioFormat = "mp3"
++    ),
++    AudioM4a(
++        label = "Music · M4A",
++        formatSelector = "bestaudio/best",
++        audioFormat = "m4a"
++    );
++
++    val isAudioOnly: Boolean get() = audioFormat != null
++
++    companion object {
++        val DEFAULT = Video1080
++        fun fromLabel(label: String): LinkQuality = entries.firstOrNull { it.label == label } ?: DEFAULT
++    }
++}
++
++/** A finished download: the file plus whatever yt-dlp reported about it. */
++data class LinkDownloadResult(
++    val file: File,
++    val title: String?
++)
++
++/**
++ * Wraps youtubedl-android so a pasted link becomes a local file. Downloads land in the app's
++ * private directory, so no storage permission is needed and nothing is written to shared storage.
++ */
++object LinkDownloader {
++
++    private val initialized = AtomicBoolean(false)
++
++    /** yt-dlp ships a Python runtime that must be unpacked once before the first run. */
++    fun ensureInitialized(context: Context) {
++        if (initialized.get()) return
++        synchronized(this) {
++            if (initialized.get()) return
++            val appContext = context.applicationContext
++            YoutubeDL.getInstance().init(appContext)
++            // The ffmpeg module is resolved reflectively: if it is absent or renamed, a pasted
++            // link still downloads, it just cannot merge separate video/audio streams.
++            runCatching {
++                val ffmpegClass = Class.forName("com.yausername.ffmpeg.FFmpeg")
++                val instance = ffmpegClass.getMethod("getInstance").invoke(null)
++                ffmpegClass.getMethod("init", Context::class.java).invoke(instance, appContext)
++            }
++            initialized.set(true)
++        }
++    }
++
++    fun download(
++        context: Context,
++        url: String,
++        quality: LinkQuality,
++        processId: String,
++        onProgress: (Float, Long) -> Unit
++    ): LinkDownloadResult {
++        ensureInitialized(context)
++        val targetDir = File(context.filesDir, DOWNLOAD_DIR_NAME).apply { mkdirs() }
++        val request = YoutubeDLRequest(url.trim())
++        request.addOption("--no-mtime")
++        request.addOption("--no-playlist")
++        request.addOption("--no-warnings")
++        request.addOption("-o", File(targetDir, "%(title).120s.%(ext)s").absolutePath)
++        request.addOption("-f", quality.formatSelector)
++        if (quality.audioFormat != null) {
++            request.addOption("--extract-audio")
++            request.addOption("--audio-format", quality.audioFormat)
++        } else {
++            request.addOption("--merge-output-format", "mp4")
++        }
++        // Ask yt-dlp for the finished path so the caller never has to guess the file name.
++        request.addOption("--print", "after_move:filepath")
++
++        val callback = DownloadProgressCallback { progress, etaSeconds ->
++            onProgress(progress, etaSeconds)
++        }
++        val response = YoutubeDL.getInstance().execute(request, callback, processId)
++        val reportedPath = response.out
++            ?.lineSequence()
++            ?.map { it.trim() }
++            ?.lastOrNull { it.isNotEmpty() }
++        val file = reportedPath
++            ?.let { File(it) }
++            ?.takeIf { it.isFile }
++            ?: targetDir.listFiles()
++                ?.filter { it.isFile }
++                ?.maxByOrNull { it.lastModified() }
++            ?: throw LinkDownloadException("The download finished but no file was produced.")
++        return LinkDownloadResult(
++            file = file,
++            title = file.name.substringBeforeLast('.').takeIf { it.isNotBlank() }
++        )
++    }
++
++    fun cancel(processId: String) {
++        runCatching { YoutubeDL.getInstance().destroyProcessById(processId) }
++    }
++
++    private const val DOWNLOAD_DIR_NAME = "link-downloads"
++}
++
++class LinkDownloadException(message: String) : Exception(message)
 diff --git a/app/src/main/java/org/zenconverter/app/ui/UiText.kt b/app/src/main/java/org/zenconverter/app/ui/UiText.kt
 index 23f94f9..a8d50db 100644
 --- a/app/src/main/java/org/zenconverter/app/ui/UiText.kt
