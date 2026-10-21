@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+env:
+  ICON_URL: https://github.com/avirarao8-cmyk/ZenConverter/releases/download/setu-ci/setu-icon-source.png
+  ICON_SHA256: 1bc577a8b71aaa2cf68ffdd7f20793e8b79fb011499f0ad2a6a287ebb80df448
+
 jobs:
   build:
     name: Build signed arm64 APK
@@ -37,11 +41,18 @@ jobs:
           grep -n 'name="app_name"' app/src/main/res/values/strings.xml
           grep -c 'targetSizeBytes' app/src/main/java/org/zenconverter/app/conversion/ConversionTaskStore.kt
 
+      - name: Fetch Setu icon
+        run: |
+          set -euo pipefail
+          curl -sSL -o setu-icon-source.png "${ICON_URL}"
+          echo "${ICON_SHA256}  setu-icon-source.png" | sha256sum -c -
+          ls -lh setu-icon-source.png
+
       - name: Generate Setu icon
         run: |
           set -euo pipefail
           python3 -m pip install --quiet --disable-pip-version-check pillow
-          python3 tools/setu_icon.py
+          python3 tools/setu_icon.py setu-icon-source.png
 
       - name: Generate signing keystore
         run: |
@@ -58,8 +69,8 @@ jobs:
           set -euo pipefail
           {
             echo "sdk.dir=${ANDROID_SDK_ROOT}"
-            echo "ZENCONVERTER_VERSION_NAME=1.1.0"
-            echo "ZENCONVERTER_VERSION_CODE=1001000"
+            echo "ZENCONVERTER_VERSION_NAME=1.2.0"
+            echo "ZENCONVERTER_VERSION_CODE=1002000"
             echo "RELEASE_STORE_FILE=setu-ci.jks"
             echo "RELEASE_STORE_PASSWORD=setuci"
             echo "RELEASE_KEY_ALIAS=setu"
@@ -79,8 +90,8 @@ jobs:
           mkdir -p dist
           apk="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)"
           test -n "${apk}"
-          cp "${apk}" dist/Setu-1.1.0-arm64-v8a.apk
-          sha256sum dist/Setu-1.1.0-arm64-v8a.apk
+          cp "${apk}" dist/Setu-1.2.0-arm64-v8a.apk
+          sha256sum dist/Setu-1.2.0-arm64-v8a.apk
           ls -lh dist
 
       - name: Publish APK to a release
@@ -92,12 +103,12 @@ jobs:
             gh release create setu-ci \
               --title "Setu CI build" \
               --notes "Automated build of Setu with target-size and quality controls."
-          gh release upload setu-ci dist/Setu-1.1.0-arm64-v8a.apk --clobber
+          gh release upload setu-ci dist/Setu-1.2.0-arm64-v8a.apk --clobber
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: setu-apk
-          path: dist/Setu-1.1.0-arm64-v8a.apk
+          path: dist/Setu-1.2.0-arm64-v8a.apk
           if-no-files-found: error
           retention-days: 14
