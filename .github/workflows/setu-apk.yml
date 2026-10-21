@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           git apply --verbose formatsetu.patch
           grep -n 'name="app_name"' app/src/main/res/values/strings.xml
-          grep -c 'zenConverterTypography' app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
+          grep -c 'ImageAdjustPanel' app/src/main/java/org/zenconverter/app/ui/ZenConverterApp.kt
 
       - name: Fetch icon artwork
         run: |
@@ -54,26 +54,24 @@ jobs:
           python3 -m pip install --quiet --disable-pip-version-check pillow
           python3 tools/setu_icon.py setu-icon-source.png
 
-      - name: Generate signing keystore
+      # A single long-lived key, so each build updates the last one instead of
+      # Android rejecting it as a different app.
+      - name: Restore the stable signing keystore
         run: |
           set -euo pipefail
-          keytool -genkeypair -v \
-            -keystore setu-ci.jks \
-            -alias setu \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass setuci -keypass setuci \
-            -dname "CN=Format Setu, OU=CI, O=Format Setu, C=IN"
+          base64 -d ci-signing.jks.b64 > setu-ci.jks
+          keytool -list -keystore setu-ci.jks -storepass setuci -alias formatsetu | grep -i "formatsetu"
 
       - name: Configure local.properties
         run: |
           set -euo pipefail
           {
             echo "sdk.dir=${ANDROID_SDK_ROOT}"
-            echo "ZENCONVERTER_VERSION_NAME=1.7.0"
-            echo "ZENCONVERTER_VERSION_CODE=1007000"
+            echo "ZENCONVERTER_VERSION_NAME=1.8.0"
+            echo "ZENCONVERTER_VERSION_CODE=1008000"
             echo "RELEASE_STORE_FILE=setu-ci.jks"
             echo "RELEASE_STORE_PASSWORD=setuci"
-            echo "RELEASE_KEY_ALIAS=setu"
+            echo "RELEASE_KEY_ALIAS=formatsetu"
             echo "RELEASE_KEY_PASSWORD=setuci"
           } > local.properties
           cat local.properties
@@ -90,8 +88,8 @@ jobs:
           mkdir -p dist
           apk="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)"
           test -n "${apk}"
-          cp "${apk}" dist/Format-Setu-1.7.0-arm64-v8a.apk
-          sha256sum dist/Format-Setu-1.7.0-arm64-v8a.apk
+          cp "${apk}" dist/Format-Setu-1.8.0-arm64-v8a.apk
+          sha256sum dist/Format-Setu-1.8.0-arm64-v8a.apk
           ls -lh dist
 
       - name: Publish APK to a release
@@ -99,16 +97,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release view setu-ci >/dev/null 2>&1 || \
-            gh release create setu-ci \
-              --title "Format Setu CI build" \
-              --notes "Automated build of Format Setu."
-          gh release upload setu-ci dist/Format-Setu-1.7.0-arm64-v8a.apk --clobber
+          gh release view format-setu-latest >/dev/null 2>&1 || \
+            gh release create format-setu-latest \
+              --title "Format Setu - current build" \
+              --notes "The newest signed Format Setu build. Install this one."
+          gh release upload format-setu-latest dist/Format-Setu-1.8.0-arm64-v8a.apk --clobber
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: formatsetu-apk
-          path: dist/Format-Setu-1.7.0-arm64-v8a.apk
+          path: dist/Format-Setu-1.8.0-arm64-v8a.apk
           if-no-files-found: error
           retention-days: 14
