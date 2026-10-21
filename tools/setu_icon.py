@@ -1,4 +1,4 @@
-"""Generate the Roopantar Neo-Vedic emblem (golden lotus + yantra on deep indigo).
+"""Generate the Setu Neo-Vedic emblem (golden lotus + yantra on deep indigo).
 
 Writes the launcher icon and the Android 12 splash icons straight into the
 app resource folders, overwriting the upstream ZenConverter artwork.
