@@ -1,17 +1,16 @@
 diff --git a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt b/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
-index 917e483..304f9b3 100644
+index 917e483..2c033cc 100644
 --- a/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
 +++ b/app/src/main/java/org/zenconverter/app/conversion/ConversionService.kt
-@@ -73,2 +73,8 @@ import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
+@@ -73,2 +73,7 @@ import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
  import com.tom_roush.pdfbox.pdmodel.PDDocument
 +import com.tom_roush.pdfbox.pdmodel.PDPage
 +import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 +import com.tom_roush.pdfbox.pdmodel.common.PDRectangle
 +import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 +import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
-+import com.tom_roush.pdfbox.util.Matrix
  import com.tom_roush.pdfbox.pdmodel.PDResources
-@@ -1440,2 +1446,26 @@ class ConversionService : Service() {
+@@ -1440,2 +1445,26 @@ class ConversionService : Service() {
  
 +        when (TargetId.fromKey(input.targetFormat)) {
 +            TargetId.PdfRotate -> {
@@ -38,7 +37,7 @@ index 917e483..304f9b3 100644
 +        }
 +
          when (input.pdfSecurityOptions.mode) {
-@@ -1657,2 +1687,206 @@ class ConversionService : Service() {
+@@ -1657,2 +1686,206 @@ class ConversionService : Service() {
  
 +    // --- Offline PDF tools: rotate, organise, page numbers, watermark, crop ---
 +
@@ -185,7 +184,7 @@ index 917e483..304f9b3 100644
 +                    stream.beginText()
 +                    stream.setFont(font, fontSize)
 +                    stream.setNonStrokingColor(70, 70, 70)
-+                    stream.setTextMatrix(Matrix.getTranslateInstance(x, y))
++                    stream.setTextMatrix(com.tom_roush.pdfbox.util.Matrix.getTranslateInstance(x, y))
 +                    stream.showText(label)
 +                    stream.endText()
 +                }
@@ -218,7 +217,7 @@ index 917e483..304f9b3 100644
 +                    stream.setNonStrokingColor(120, 120, 120)
 +                    val x = box.lowerLeftX + (box.width - (textWidth * Math.cos(angle).toFloat())) / 2f
 +                    val y = box.lowerLeftY + (box.height - (textWidth * Math.sin(angle).toFloat())) / 2f
-+                    stream.setTextMatrix(Matrix.getRotateInstance(angle, x, y))
++                    stream.setTextMatrix(com.tom_roush.pdfbox.util.Matrix.getRotateInstance(angle, x, y))
 +                    stream.showText(text)
 +                    stream.endText()
 +                }
@@ -245,14 +244,14 @@ index 917e483..304f9b3 100644
 +    }
 +
      private fun writePdfTextFile(
-@@ -1885,3 +2119,5 @@ class ConversionService : Service() {
+@@ -1885,3 +2118,5 @@ class ConversionService : Service() {
                          input.imageOptions.quality,
 -                        shouldUseWebpLossless(outputProfile, input.imageOptions)
 +                        shouldUseWebpLossless(outputProfile, input.imageOptions),
 +                        targetSizeBytes = input.imageOptions.targetSizeBytes,
 +                        edit = input.imageOptions.edit
                      )
-@@ -2226,8 +2462,11 @@ class ConversionService : Service() {
+@@ -2226,8 +2461,11 @@ class ConversionService : Service() {
              throwIfConversionCancelled()
 -            outputFile.outputStream().use { output ->
 -                if (!bitmapForOutput.compress(compressFormat, quality, output)) {
@@ -270,21 +269,21 @@ index 917e483..304f9b3 100644
 +                edit = input.imageOptions.edit
 +            )
              throwIfConversionCancelled()
-@@ -2323,3 +2562,5 @@ class ConversionService : Service() {
+@@ -2323,3 +2561,5 @@ class ConversionService : Service() {
              requestedQuality = imageOptions.quality,
 -            useWebpLossless = shouldUseWebpLossless(outputProfile, imageOptions)
 +            useWebpLossless = shouldUseWebpLossless(outputProfile, imageOptions),
 +            targetSizeBytes = imageOptions.targetSizeBytes,
 +            edit = imageOptions.edit
          )
-@@ -2332,3 +2573,5 @@ class ConversionService : Service() {
+@@ -2332,3 +2572,5 @@ class ConversionService : Service() {
          requestedQuality: Int,
 -        useWebpLossless: Boolean = false
 +        useWebpLossless: Boolean = false,
 +        targetSizeBytes: Long? = null,
 +        edit: ImageEditOptions? = null
      ) {
-@@ -2345,8 +2588,11 @@ class ConversionService : Service() {
+@@ -2345,8 +2587,11 @@ class ConversionService : Service() {
              throwIfConversionCancelled()
 -            outputFile.outputStream().use { output ->
 -                if (!bitmapForOutput.compress(compressFormat, quality, output)) {
@@ -302,7 +301,7 @@ index 917e483..304f9b3 100644
 +                edit = edit
 +            )
              throwIfConversionCancelled()
-@@ -2359,2 +2605,371 @@ class ConversionService : Service() {
+@@ -2359,2 +2604,371 @@ class ConversionService : Service() {
  
 +    /**
 +     * Writes [bitmap] to [outputFile], honouring an optional maximum output size.
@@ -674,17 +673,17 @@ index 917e483..304f9b3 100644
 +    }
 +
      private fun writeIcoImageFile(
-@@ -4209,3 +4824,3 @@ class ConversionService : Service() {
+@@ -4209,3 +4823,3 @@ class ConversionService : Service() {
                  }
 -                input.videoOptions.videoBitrate?.let { bitrate ->
 +                effectiveVideoBitrate(input.videoOptions, totalDurationMs, includeAudio, videoAudioOptions)?.let { bitrate ->
                      add("-b:v")
-@@ -4882,3 +5497,3 @@ class ConversionService : Service() {
+@@ -4882,3 +5496,3 @@ class ConversionService : Service() {
              }
 -            input.videoOptions.videoBitrate?.let { bitrate ->
 +            effectiveVideoBitrate(input.videoOptions, durationMs, includeAudio, videoAudioOptions)?.let { bitrate ->
                  add("-b:v")
-@@ -4933,2 +5548,22 @@ class ConversionService : Service() {
+@@ -4933,2 +5547,22 @@ class ConversionService : Service() {
  
 +    private fun effectiveVideoBitrate(
 +        videoOptions: VideoExportOptions,
@@ -707,14 +706,14 @@ index 917e483..304f9b3 100644
 +    }
 +
      private fun ffmpegVideoAudioOptionsFor(
-@@ -4963,3 +5598,5 @@ class ConversionService : Service() {
+@@ -4963,3 +5597,5 @@ class ConversionService : Service() {
              } else {
 -                audioOptions.audioBitrate?.let { bitrate ->
 +                val targetAudioBitrate = targetBitrateForSize(audioOptions.targetSizeBytes, durationMs)
 +                    ?.coerceAtLeast(MIN_TARGET_AUDIO_BITRATE_BPS)
 +                (targetAudioBitrate ?: audioOptions.audioBitrate)?.let { bitrate ->
                      add("-b:a")
-@@ -7176,3 +7813,8 @@ class ConversionService : Service() {
+@@ -7176,3 +7812,8 @@ class ConversionService : Service() {
                          TargetId.fromKey(input.targetFormat) == TargetId.PdfDecrypt ||
 -                        TargetId.fromKey(input.targetFormat) == TargetId.PdfCompress ->
 +                        TargetId.fromKey(input.targetFormat) == TargetId.PdfCompress ||
